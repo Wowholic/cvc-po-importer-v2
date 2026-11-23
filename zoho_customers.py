@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -40,6 +41,7 @@ LEGAL_WORDS = {
 }
 MATCH_FLOOR = 0.72
 _lock = threading.Lock()
+_inflight = {}
 _cache = {
     "token": "",
     "token_until": 0.0,
@@ -126,21 +128,75 @@ def _saved_list(key: str, loader):
         return [], str(error)
 
 
-def list_customers() -> list[dict]:
+def collect_pages(fetch, limit: int) -> list:
+    """Fetch list pages together. fetch(page) returns (rows, has_more)."""
+    rows, more = fetch(1)
+    collected = list(rows)
+    page = 2
+    while more and page <= limit:
+        last = min(page + 7, limit)
+        wave = list(range(page, last + 1))
+        with ThreadPoolExecutor(max_workers=len(wave)) as pool:
+            got = list(pool.map(lambda number: (number, fetch(number)), wave))
+        got.sort()
+        for _number, (page_rows, page_more) in got:
+            collected.extend(page_rows)
+            more = page_more
+            if not page_more:
+                break
+        page = last + 1
+    return collected
+
+
+def _remember(key: str, loader):
     now = time.monotonic()
     with _lock:
-        cached = _cache["customers"]
-        if cached is not None and now < _cache["customers_until"]:
+        cached = _cache[key]
+        if cached is not None and now < _cache[f"{key}_until"]:
             return cached
-    collected = []
-    page = 1
-    while page <= 25:
+        event = _inflight.get(key)
+        if event is None:
+            event = threading.Event()
+            _inflight[key] = event
+            leader = True
+        else:
+            leader = False
+    if not leader:
+        event.wait(180)
+        with _lock:
+            cached = _cache[key]
+            fresh = cached is not None and time.monotonic() < _cache[f"{key}_until"]
+        if fresh:
+            return cached
+        return _remember(key, loader)
+    try:
+        collected = loader()
+    except Exception:
+        with _lock:
+            _inflight.pop(key, None)
+        event.set()
+        raise
+    with _lock:
+        _cache[key] = collected
+        _cache[f"{key}_until"] = time.monotonic() + 600
+        _inflight.pop(key, None)
+    event.set()
+    return collected
+
+
+def list_customers() -> list[dict]:
+    return _remember("customers", _fetch_customers)
+
+
+def _fetch_customers() -> list[dict]:
+    def fetch(page):
         body = _books_get(CONTACTS_PATH, {
             "organization_id": ZOHO_ORGANIZATION_ID,
             "contact_type": "customer",
             "page": page,
             "per_page": 200,
         })
+        rows = []
         for contact in body.get("contacts") or []:
             if not isinstance(contact, dict):
                 continue
@@ -148,27 +204,31 @@ def list_customers() -> list[dict]:
             company_name = " ".join(str(contact.get("company_name") or "").split())
             if not name and not company_name:
                 continue
-            collected.append({
+            rows.append({
                 "id": str(contact.get("contact_id") or ""),
                 "name": name or company_name,
                 "company": company_name,
                 "status": str(contact.get("status") or "active"),
             })
         context = body.get("page_context") or {}
-        if not context.get("has_more_page"):
-            break
-        page += 1
+        return rows, bool(context.get("has_more_page"))
+
+    collected = collect_pages(fetch, 25)
     collected.sort(key=lambda item: (item["status"] != "active", item["name"].lower()))
-    with _lock:
-        _cache["customers"] = collected
-        _cache["customers_until"] = time.monotonic() + 600
     return collected
 
 
-def item_choices(sources) -> dict:
+def item_catalog() -> dict:
     if not configured():
+        return {"connected": False, "items": []}
+    return {"connected": True, "items": list_items()}
+
+
+def item_choices(sources) -> dict:
+    catalog = item_catalog()
+    if not catalog["connected"]:
         return {"connected": False, "items": [], "matches": {}}
-    items = list_items()
+    items = catalog["items"]
     by_id = {item["id"]: item for item in items if item.get("id")}
     wanted = []
     seen = set()
@@ -397,19 +457,17 @@ def _named_rows(rows, id_key: str, name_key: str, extra_key: str) -> list[dict]:
 
 
 def list_items() -> list[dict]:
-    now = time.monotonic()
-    with _lock:
-        cached = _cache["items"]
-        if cached is not None and now < _cache["items_until"]:
-            return cached
-    collected = []
-    page = 1
-    while page <= 50:
+    return _remember("items", _fetch_items)
+
+
+def _fetch_items() -> list[dict]:
+    def fetch(page):
         body = _books_get(ITEMS_PATH, {
             "organization_id": ZOHO_ORGANIZATION_ID,
             "page": page,
             "per_page": 200,
         })
+        rows = []
         for item in body.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -417,20 +475,17 @@ def list_items() -> list[dict]:
             sku = " ".join(str(item.get("sku") or "").split())
             if not name and not sku:
                 continue
-            collected.append({
+            rows.append({
                 "id": str(item.get("item_id") or ""),
                 "name": name or sku,
                 "sku": sku,
                 "status": str(item.get("status") or "active"),
             })
         context = body.get("page_context") or {}
-        if not context.get("has_more_page"):
-            break
-        page += 1
+        return rows, bool(context.get("has_more_page"))
+
+    collected = collect_pages(fetch, 50)
     collected.sort(key=lambda item: (item["status"] != "active", item["name"].lower()))
-    with _lock:
-        _cache["items"] = collected
-        _cache["items_until"] = time.monotonic() + 600
     return collected
 
 

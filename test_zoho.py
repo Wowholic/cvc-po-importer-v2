@@ -1,7 +1,22 @@
 import unittest
 
 from test_auth import signed_in_client
-from zoho_customers import best_item, best_match, configured, delivery_methods_from, payment_terms_from
+from zoho_customers import (
+    best_item,
+    best_match,
+    collect_pages,
+    configured,
+    delivery_methods_from,
+    payment_terms_from,
+)
+
+
+class PageFetchTest(unittest.TestCase):
+    def test_pages_stop_when_the_list_ends(self):
+        def fetch(page):
+            return [page], page < 3
+
+        self.assertEqual(collect_pages(fetch, 10), [1, 2, 3])
 
 
 class CustomerMatchTest(unittest.TestCase):

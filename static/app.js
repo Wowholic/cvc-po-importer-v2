@@ -55,7 +55,8 @@ let customerLoad = Promise.resolve();
 let customers = [];
 let figureLoad = Promise.resolve({ figures: [], matches: {} });
 let figureCatalog = [];
-let itemLoad = Promise.resolve({ connected: false, items: [], matches: {} });
+let itemLoad = Promise.resolve({ connected: false, items: [] });
+let matchLoad = Promise.resolve({ matches: {} });
 let zohoItems = [];
 let optionLoad = Promise.resolve({
   connected: false,
@@ -199,7 +200,7 @@ async function readPdf() {
     summary.textContent = !data.rows || !data.rows.length
       ? "Nothing was found in the PDF. Fill in the order and the line below, or add more."
       : "";
-    await Promise.all([customerLoad, figureLoad, itemLoad, optionLoad]);
+    await Promise.all([customerLoad, figureLoad, itemLoad, optionLoad, matchLoad]);
     setPhase("review");
     pristine = JSON.stringify(readAll());
     const first = order.querySelector(".picker-value, textarea");
@@ -215,37 +216,49 @@ function renderLines(rows) {
   renderOrder(rows);
   lines.replaceChildren();
   figureLoad = requestFigures(rows);
-  itemLoad = requestItems(rows);
+  itemLoad = requestItems();
+  matchLoad = requestItemMatches(rows);
   rows.forEach((row, index) => appendRow(row, index));
   renumber();
 }
 
-async function requestItems(rows) {
-  const figures = rows
-    .map((row) => (row["FIG#"] == null ? "" : String(row["FIG#"]).trim()))
-    .filter(Boolean);
+async function requestItems() {
   try {
     const response = await fetch("/api/items", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ figures }),
-      signal: AbortSignal.timeout(60000),
+      body: "{}",
+      signal: AbortSignal.timeout(90000),
     });
     const data = await readJson(response);
     zohoItems = Array.isArray(data.items) ? data.items : [];
-    return {
-      connected: Boolean(data.connected),
-      items: zohoItems,
-      matches: data.matches || {},
-    };
+    return { connected: Boolean(data.connected), items: zohoItems };
   } catch (error) {
     zohoItems = [];
     return {
       connected: false,
       items: [],
-      matches: {},
       error: error.message || "Zoho Books could not load items.",
     };
+  }
+}
+
+async function requestItemMatches(rows) {
+  const figures = rows
+    .map((row) => (row["FIG#"] == null ? "" : String(row["FIG#"]).trim()))
+    .filter(Boolean);
+  if (!figures.length) return { matches: {} };
+  try {
+    const response = await fetch("/api/item-matches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ figures }),
+      signal: AbortSignal.timeout(150000),
+    });
+    const data = await readJson(response);
+    return { matches: data.matches || {} };
+  } catch (error) {
+    return { matches: {}, error: error.message || "Zoho Books could not match items." };
   }
 }
 
@@ -441,6 +454,7 @@ function zohoFigureControl(extracted) {
   picker.append(toggle, menu);
   wrap.append(label, note, value, picker);
 
+  let pickedByUser = false;
   const setChosen = (name, id) => {
     value.value = name || "";
     value.dataset.itemId = id || "";
@@ -499,6 +513,7 @@ function zohoFigureControl(extracted) {
       button.append(extra);
     }
     button.addEventListener("click", () => {
+      pickedByUser = true;
       setChosen(name, id);
       closePicker(picker);
       result.hidden = true;
@@ -545,10 +560,21 @@ function zohoFigureControl(extracted) {
       return;
     }
     value.dataset.ready = data.connected ? "1" : "";
+    if (!pickedByUser && !value.dataset.itemId) {
+      toggleText.textContent = "Matching the figure";
+    }
+    if (!menu.hidden) renderChoices(search.value);
+    if (data.error) {
+      note.hidden = false;
+      note.textContent = data.error;
+    }
+  });
+  matchLoad.then((data) => {
+    if (!wrap.isConnected || pickedByUser) return;
     const match = data.matches && data.matches[extracted.trim()];
     if (match && match.id) setChosen(match.name, match.id);
-    else setChosen("", "");
-    if (data.error) {
+    else if (!pickedByUser && !value.dataset.itemId) setChosen("", "");
+    if (data.error && note.hidden) {
       note.hidden = false;
       note.textContent = data.error;
     }
@@ -988,7 +1014,7 @@ function companyControl(extracted) {
 async function loadCustomers(extracted, wrap, setChosen, note, renderChoices) {
   try {
     const response = await fetch(`/api/customers?company=${encodeURIComponent(extracted)}`, {
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(90000),
     });
     const data = await readJson(response);
     if (!wrap.isConnected) return;

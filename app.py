@@ -4,6 +4,7 @@
 import json
 import logging
 import math
+import threading
 import time
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
@@ -25,7 +26,7 @@ from extract_po import ExtractError, extract_bytes
 from rows import RowError
 from figures import figure_choices
 from sheet import SheetError, append_purchase_orders
-from zoho_customers import ZohoError, customer_choices, item_choices, order_option_choices
+from zoho_customers import ZohoError, customer_choices, item_catalog, item_choices, list_customers, list_items, order_option_choices
 from zoho_orders import OrderInputError, create_draft_sales_order, prepare_draft_sales_order
 
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +54,33 @@ def _remember(response):
         path="/",
     )
     return response
+
+
+_warm_started = False
+
+
+def _warm_zoho():
+    try:
+        from zoho_customers import configured
+        if not configured():
+            return
+        list_customers()
+        list_items()
+    except Exception:
+        app.logger.exception("zoho list warm failed")
+
+
+def _start_warm():
+    global _warm_started
+    if _warm_started or app.config.get("TESTING"):
+        return
+    _warm_started = True
+    threading.Thread(target=_warm_zoho, daemon=True).start()
+
+
+@app.before_request
+def warm_zoho_lists():
+    _start_warm()
 
 
 @app.before_request
@@ -133,17 +161,30 @@ def customers():
 
 @app.post("/api/items")
 def items():
-    body = request.get_json(silent=True) or {}
-    sources = body.get("figures")
-    if not isinstance(sources, list):
-        return fail("Send the figure numbers to match.", 400)
     try:
-        return jsonify(item_choices(sources[:200]))
+        return jsonify(item_catalog())
     except ZohoError as error:
         return fail(str(error), 502)
     except Exception:
         app.logger.exception("item list failed")
         return fail("Zoho Books could not load items.", 502)
+
+
+@app.post("/api/item-matches")
+def item_matches():
+    body = request.get_json(silent=True) or {}
+    sources = body.get("figures")
+    if not isinstance(sources, list):
+        return fail("Send the figure numbers to match.", 400)
+    try:
+        result = item_choices(sources[:200])
+    except ZohoError as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("item match failed")
+        return fail("Zoho Books could not match items.", 502)
+    result.pop("items", None)
+    return jsonify(result)
 
 
 @app.post("/api/order-options")
@@ -253,4 +294,5 @@ def too_large(_error):
 if __name__ == "__main__":
     import os
 
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    _start_warm()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), threaded=True)
