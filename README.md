@@ -1,8 +1,8 @@
 # Purchase desk
 
-A manual companion to the mailbox importer. Drop a purchase-order PDF, read it with Gemini, correct the lines, then append them to the same `POs` spreadsheet.
+Purchase desk turns a purchase-order PDF into a reviewed order. Drop in the PDF, check the customer, dates, and lines, then send it on.
 
-Vendor PO and both shipment dates stay blank. Sales Amount is the formula `=J*I`. A customer PO number that is already on the sheet is not added again.
+It can add the lines to the purchase-order spreadsheet and save a draft sales order in Zoho Books, with the PDF attached.
 
 ## Run
 
@@ -13,10 +13,4 @@ cp .env.example .env
 .venv/bin/gunicorn --bind 127.0.0.1:8080 --timeout 180 app:app
 ```
 
-Open `http://127.0.0.1:8080`.
-
-`GEMINI_API_KEY` is the same key the mailbox app stores as `gemini-api-key`. The model is `gemini-flash-latest`.
-
-`GOOGLE_SERVICE_ACCOUNT_JSON` is the service account JSON on one line. `GOOGLE_IMPERSONATE` stays `thenning@lunkenheimercvc.com` so the write uses the same access to the shared sheet.
-
-Zoho Books is a choice on submit and does not create an order yet.
+Open `http://127.0.0.1:8080`. Fill in `.env` from `.env.example` before reading a PDF or sending an order.
