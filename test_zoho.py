@@ -1,6 +1,6 @@
 import unittest
 
-from app import app
+from test_auth import signed_in_client
 from zoho_customers import best_item, best_match, configured, delivery_methods_from, payment_terms_from
 
 
@@ -86,7 +86,7 @@ class OrderOptionParseTest(unittest.TestCase):
 
 class CustomerApiTest(unittest.TestCase):
     def setUp(self):
-        self.client = app.test_client()
+        self.client = signed_in_client()
 
     def test_unconfigured_books_is_left_unread(self):
         if configured():

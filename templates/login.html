@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sign in · Purchase desk</title>
+  <link rel="stylesheet" href="/static/app.css?v=23">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/login">
+      <span class="mark" aria-hidden="true"><span>PO</span></span>
+      <span>
+        <span class="eyebrow">Cincinnati Valve</span>
+        <h1 class="name">Purchase desk</h1>
+      </span>
+    </a>
+  </header>
+
+  <main class="shell">
+    <form class="login" method="post" action="/login">
+      <h2>Sign in</h2>
+      {% if error %}
+      <p class="login-error" role="alert">{{ error }}</p>
+      {% endif %}
+      <label class="field">
+        <span>User</span>
+        <input name="user" autocomplete="username" required {% if not ready %}disabled{% endif %}>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input name="password" type="password" autocomplete="current-password" required {% if not ready %}disabled{% endif %}>
+      </label>
+      <button class="primary" type="submit" {% if not ready %}disabled{% endif %}>Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

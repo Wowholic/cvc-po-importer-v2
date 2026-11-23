@@ -1,7 +1,7 @@
 import unittest
 from io import BytesIO
 
-from app import app
+from test_auth import signed_in_client
 from extract_po import parse_rows
 from rows import build_sheet_values, normalize_row, partition_new, validate_rows
 
@@ -89,7 +89,7 @@ class RowLayoutTest(unittest.TestCase):
 
 class AppTest(unittest.TestCase):
     def setUp(self):
-        self.client = app.test_client()
+        self.client = signed_in_client()
 
     def test_home_links_to_the_shared_spreadsheet(self):
         response = self.client.get("/")

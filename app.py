@@ -3,9 +3,23 @@
 
 import json
 import logging
+import math
+import time
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
+from auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    auth_settings,
+    check_credentials,
+    clear_failures,
+    client_ip,
+    create_session,
+    locked_for,
+    record_failure,
+    verify_session,
+)
 from config import MAX_PDF_BYTES, SHEET_URL
 from extract_po import ExtractError, extract_bytes
 from rows import RowError
@@ -22,6 +36,63 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 def fail(message: str, status: int):
     return jsonify(error=message), status
+
+
+def _signed_in() -> bool:
+    return verify_session(request.cookies.get(SESSION_COOKIE))
+
+
+def _remember(response):
+    response.set_cookie(
+        SESSION_COOKIE,
+        create_session(),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=request.is_secure or request.headers.get("X-Forwarded-Proto") == "https",
+        samesite="Strict",
+        path="/",
+    )
+    return response
+
+
+@app.before_request
+def require_login():
+    if request.endpoint in {"login", "logout", "static"}:
+        return None
+    if _signed_in():
+        return None
+    if request.path.startswith("/api/"):
+        return fail("Not logged in.", 401)
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET" and _signed_in():
+        return redirect(url_for("index"))
+    settings, setup_error = auth_settings()
+    error = "" if settings else setup_error
+    if request.method == "POST" and settings:
+        address = client_ip(request.headers, request.remote_addr)
+        wait = locked_for(address)
+        if wait:
+            error = f"Too many failed attempts. Try again in {math.ceil(wait / 60)} minutes."
+        elif not check_credentials(request.form.get("user", ""), request.form.get("password", "")):
+            record_failure(address)
+            if not app.config.get("TESTING"):
+                time.sleep(0.8)
+            error = "Wrong user or password."
+        else:
+            clear_failures(address)
+            return _remember(redirect(url_for("index")))
+    return render_template("login.html", error=error, ready=settings is not None)
+
+
+@app.post("/logout")
+def logout():
+    response = redirect(url_for("login"))
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 @app.get("/")
