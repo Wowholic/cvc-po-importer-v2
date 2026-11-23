@@ -5,10 +5,10 @@ This module never creates or updates Zoho data.
 
 import json
 import logging
+import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -129,23 +129,50 @@ def _saved_list(key: str, loader):
 
 
 def collect_pages(fetch, limit: int) -> list:
-    """Fetch list pages together. fetch(page) returns (rows, has_more)."""
-    rows, more = fetch(1)
-    collected = list(rows)
-    page = 2
-    while more and page <= limit:
-        last = min(page + 7, limit)
-        wave = list(range(page, last + 1))
-        with ThreadPoolExecutor(max_workers=len(wave)) as pool:
-            got = list(pool.map(lambda number: (number, fetch(number)), wave))
-        got.sort()
-        for _number, (page_rows, page_more) in got:
-            collected.extend(page_rows)
-            more = page_more
-            if not page_more:
-                break
-        page = last + 1
+    """Fetch list pages one at a time. fetch(page) returns (rows, has_more)."""
+    collected = []
+    page = 1
+    while page <= limit:
+        rows, more = _fetch_page(fetch, page)
+        collected.extend(rows)
+        if not more:
+            break
+        page += 1
     return collected
+
+
+def _fetch_page(fetch, page):
+    try:
+        return fetch(page)
+    except requests.Timeout:
+        return fetch(page)
+
+
+def _disk_cache(key: str):
+    folder = os.environ.get("LIST_CACHE_DIR", "/tmp/cvc-po-lists")
+    return os.path.join(folder, f"{key}.json")
+
+
+def _read_disk(key: str):
+    try:
+        with open(_disk_cache(key), encoding="utf-8") as handle:
+            payload = json.load(handle)
+        saved = float(payload["saved"])
+        rows = payload["rows"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if time.time() - saved > 600 or not isinstance(rows, list):
+        return None
+    return rows
+
+
+def _write_disk(key: str, rows: list):
+    path = _disk_cache(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump({"saved": time.time(), "rows": rows}, handle)
+    os.replace(temporary, path)
 
 
 def _remember(key: str, loader):
@@ -154,6 +181,13 @@ def _remember(key: str, loader):
         cached = _cache[key]
         if cached is not None and now < _cache[f"{key}_until"]:
             return cached
+    stored = _read_disk(key)
+    if stored is not None:
+        with _lock:
+            _cache[key] = stored
+            _cache[f"{key}_until"] = time.monotonic() + 600
+        return stored
+    with _lock:
         event = _inflight.get(key)
         if event is None:
             event = threading.Event()
@@ -181,6 +215,10 @@ def _remember(key: str, loader):
         _cache[f"{key}_until"] = time.monotonic() + 600
         _inflight.pop(key, None)
     event.set()
+    try:
+        _write_disk(key, collected)
+    except OSError:
+        logger.exception("list cache was not saved")
     return collected
 
 
@@ -637,7 +675,7 @@ def _books_get(path: str, params: dict) -> dict:
         f"{domain}{path}",
         params=params,
         headers={"Authorization": f"Zoho-oauthtoken {token}"},
-        timeout=30,
+        timeout=60,
     )
     try:
         body = response.json()

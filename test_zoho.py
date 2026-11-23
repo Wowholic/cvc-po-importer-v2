@@ -1,5 +1,7 @@
 import unittest
 
+import requests
+
 from test_auth import signed_in_client
 from zoho_customers import (
     best_item,
@@ -17,6 +19,18 @@ class PageFetchTest(unittest.TestCase):
             return [page], page < 3
 
         self.assertEqual(collect_pages(fetch, 10), [1, 2, 3])
+
+    def test_a_stalled_page_is_tried_again(self):
+        calls = {"count": 0}
+
+        def fetch(page):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise requests.Timeout()
+            return [page], False
+
+        self.assertEqual(collect_pages(fetch, 5), [1])
+        self.assertEqual(calls["count"], 2)
 
 
 class CustomerMatchTest(unittest.TestCase):

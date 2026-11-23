@@ -228,7 +228,7 @@ async function requestItems() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(180000),
     });
     const data = await readJson(response);
     zohoItems = Array.isArray(data.items) ? data.items : [];
@@ -1014,7 +1014,7 @@ function companyControl(extracted) {
 async function loadCustomers(extracted, wrap, setChosen, note, renderChoices) {
   try {
     const response = await fetch(`/api/customers?company=${encodeURIComponent(extracted)}`, {
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(180000),
     });
     const data = await readJson(response);
     if (!wrap.isConnected) return;
