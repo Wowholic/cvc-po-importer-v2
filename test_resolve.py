@@ -1,8 +1,9 @@
 import unittest
 from datetime import date
+from fractions import Fraction
 
 from extract_po import usage_record
-from resolve import match_item, resolve_order
+from resolve import family_figure, match_item, pdf_size, pdf_sizes, resolve_order, size_value
 
 BRONZE = {"id": "1", "name": "BRONZE - 906BS001", "sku": "", "status": "active"}
 BRASS = {"id": "2", "name": "BRASS GATE 12", "sku": "", "status": "active"}
@@ -28,6 +29,126 @@ class ItemMatchTest(unittest.TestCase):
         chosen, pending = match_item("1LUNKENHEIMER906BS", "", [BRONZE, OTHER])
         self.assertIsNone(chosen)
         self.assertEqual([item["id"] for item in pending], ["1", "3"])
+
+
+SIZES_906BS = [("001", '1/8"'), ("002", '1/4"'), ("004", '3/8"'), ("005", '1/2"'), ("007", '3/4"'), ("010", '1"')]
+FAMILY = [
+    {"id": f"s{suffix}", "name": f"BRONZE - 906BS{suffix}", "sku": "", "status": "active"}
+    for suffix, _size in SIZES_906BS
+] + [{"id": "stem", "name": 'STEM FOR 1/2" 906BS', "sku": "", "status": "active"}]
+SIZES = {f"906BS{suffix}": size for suffix, size in SIZES_906BS}
+
+
+class SizeMatchTest(unittest.TestCase):
+    def test_the_description_size_picks_one_item_of_a_family(self):
+        chosen, pending = match_item(
+            "1LUNKENHEIMER906BS", "1 400# BRZ THR NEEDLE VL #906 BS", FAMILY, SIZES,
+        )
+        self.assertEqual(chosen["name"], "BRONZE - 906BS010")
+        self.assertEqual(pending, [])
+
+    def test_an_inch_mark_anywhere_in_the_description_counts(self):
+        chosen, _pending = match_item("906BS", "BRZ NEEDLE VALVE 3/4\" NPT", FAMILY, SIZES)
+        self.assertEqual(chosen["name"], "BRONZE - 906BS007")
+
+    def test_no_size_in_the_description_leaves_it_for_gemini(self):
+        chosen, pending = match_item("906BS", "BRZ NEEDLE VALVE", FAMILY, SIZES)
+        self.assertIsNone(chosen)
+        self.assertTrue(pending)
+
+    def test_a_size_no_candidate_has_leaves_it_for_gemini(self):
+        chosen, pending = match_item("906BS", '2" BRZ NEEDLE VALVE', FAMILY, SIZES)
+        self.assertIsNone(chosen)
+        self.assertTrue(pending)
+
+    def test_two_candidates_with_that_size_leave_it_for_gemini(self):
+        sizes = dict(SIZES, **{"906BS007": '1"'})
+        chosen, pending = match_item("906BS", '1" BRZ NEEDLE VALVE', FAMILY, sizes)
+        self.assertIsNone(chosen)
+        self.assertTrue(pending)
+
+    def test_without_the_size_column_nothing_changes(self):
+        chosen, pending = match_item("906BS", '1" BRZ NEEDLE VALVE', FAMILY, {})
+        self.assertIsNone(chosen)
+        self.assertTrue(pending)
+
+    def test_size_spellings(self):
+        for text in ['1-1/2"', "1 1/2", '1.5"', "1½", "1-1/2 IN"]:
+            self.assertEqual(size_value(text), Fraction(3, 2), text)
+        self.assertIsNone(size_value("E"))
+        self.assertIsNone(pdf_size("150# BRONZE GATE"))
+
+    def test_resolve_does_not_ask_gemini_for_a_sized_family(self):
+        rows = [{"FIG#": "1LUNKENHEIMER906BS", "Description": "1 400# BRZ THR NEEDLE VL #906 BS"}]
+        catalog = {"items": FAMILY, "figureSizes": SIZES}
+
+        def ask(_pending):
+            raise AssertionError("Gemini should not be asked")
+
+        result = resolve_order(rows, catalog, ask)
+        self.assertEqual(result["items"]["1LUNKENHEIMER906BS"]["name"], "BRONZE - 906BS010")
+
+
+FAMILY_1837 = [
+    {"id": "f1837", "name": "1837", "sku": "", "status": "active"},
+    {"id": "f40", "name": "BRONZE - 1837-40-005", "sku": "", "status": "active"},
+    {"id": "b002", "name": "BRONZE - 1837002", "sku": "", "status": "active"},
+    {"id": "b004", "name": "BRONZE - 1837004", "sku": "", "status": "active"},
+    {"id": "b015", "name": "BRONZE - 1837015", "sku": "", "status": "active"},
+]
+SIZES_1837 = {"1837002": '1/4"', "1837004": '3/8"', "1837015": '1-1/2"', "906BS002": '1/4"'}
+
+
+class FamilySizeTest(unittest.TestCase):
+    def test_a_size_in_the_figure_finds_the_inventory_row_and_its_zoho_item(self):
+        chosen, pending = match_item("MSP_18374X1/4", "", FAMILY_1837, SIZES_1837)
+        self.assertEqual(chosen["name"], "BRONZE - 1837002")
+        self.assertEqual(pending, [])
+
+    def test_a_mixed_fraction_in_the_figure(self):
+        chosen, _pending = match_item("MSP_1837X1-1/2", "", FAMILY_1837, SIZES_1837)
+        self.assertEqual(chosen["name"], "BRONZE - 1837015")
+
+    def test_the_size_can_come_from_the_description(self):
+        self.assertEqual(family_figure("MSP_1837", '3/8" GLOBE', SIZES_1837), "1837004")
+
+    def test_a_family_right_after_another_digit_does_not_count(self):
+        self.assertEqual(family_figure("MSP_91837X1/4", "", SIZES_1837), "")
+
+    def test_no_size_means_no_family_match(self):
+        self.assertEqual(family_figure("MSP_1837", "", SIZES_1837), "")
+
+    def test_bare_digits_in_the_figure_are_not_a_size(self):
+        self.assertEqual(pdf_sizes("1LUNKENHEIMER906BS", ""), set())
+        self.assertEqual(pdf_sizes("MSP_18374X1/4", ""), {Fraction(1, 4)})
+
+    def test_resolve_fills_both_figures_without_gemini(self):
+        rows = [{"FIG#": "MSP_18374X1/4", "Description": ""}]
+        catalog = {
+            "items": FAMILY_1837,
+            "figures": ["1837002", "1837004", "1837015"],
+            "figureSizes": SIZES_1837,
+        }
+
+        def ask(_pending):
+            raise AssertionError("Gemini should not be asked")
+
+        result = resolve_order(rows, catalog, ask)
+        self.assertEqual(result["figures"], {"MSP_18374X1/4": "1837002"})
+        self.assertEqual(result["items"]["MSP_18374X1/4"]["name"], "BRONZE - 1837002")
+
+
+class FigureFirstTest(unittest.TestCase):
+    def test_a_description_code_does_not_outrank_the_fig_number(self):
+        items = [
+            {"id": f"cr{n}", "name": f"STEEL - 1111{n:03d}-CR13-16.00", "sku": "", "status": "active"}
+            for n in range(12)
+        ] + [{"id": "t", "name": "T-811X", "sku": "", "status": "active"}]
+        chosen, pending = match_item(
+            "T-811X", "GASKET,BONNET;14 IN;FIGURE 3013;LUNKENHEIMER;CR13", items,
+        )
+        self.assertEqual(chosen["name"], "T-811X")
+        self.assertEqual(pending, [])
 
 
 class ResolveTest(unittest.TestCase):

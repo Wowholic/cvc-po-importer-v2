@@ -42,8 +42,10 @@ def tab_range(cells: str) -> str:
     return f"'{title}'!{cells}"
 
 
-SALES_AMOUNT_COLUMN = 10
-SHEET_WIDTH = 27
+# Column M (Sales Amount) and the tab's width through AC (Backlog Note).
+SALES_AMOUNT_COLUMN = 12
+SHEET_WIDTH = 29
+LAST_WRITTEN_COLUMN = "T"
 
 
 def _cell(row, index) -> str:
@@ -53,7 +55,7 @@ def _cell(row, index) -> str:
 
 
 def row_is_open(row) -> bool:
-    """A row can be reused when it is empty, or when column K is only the $0.00 formula."""
+    """A row can be reused when it is empty, or when column M is only the $0.00 formula."""
     for index in range(SHEET_WIDTH):
         value = _cell(row, index)
         if index == SALES_AMOUNT_COLUMN:
@@ -117,7 +119,7 @@ def plain_format(sheets, start: int, end: int) -> None:
         body={"requests": [
             {
                 "repeatCell": {
-                    "range": cell_range(0, 11),
+                    "range": cell_range(0, 13),
                     "cell": {
                         "userEnteredFormat": {
                             "backgroundColor": {"red": 1, "green": 1, "blue": 1},
@@ -153,7 +155,7 @@ def plain_format(sheets, start: int, end: int) -> None:
             },
             {
                 "repeatCell": {
-                    "range": cell_range(11, 18),
+                    "range": cell_range(13, 20),
                     "cell": {
                         "userEnteredFormat": {
                             "horizontalAlignment": "CENTER",
@@ -172,14 +174,14 @@ def plain_format(sheets, start: int, end: int) -> None:
             },
             {
                 "repeatCell": {
-                    "range": cell_range(8, 9),
+                    "range": cell_range(8, 11),
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "General"}}},
                     "fields": "userEnteredFormat.numberFormat",
                 }
             },
             {
                 "repeatCell": {
-                    "range": cell_range(9, 11),
+                    "range": cell_range(11, 13),
                     "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": '"$"#,##0.00'}}},
                     "fields": "userEnteredFormat.numberFormat",
                 }
@@ -197,7 +199,7 @@ def append_purchase_orders(raw_rows, sales_order_number: str = "") -> dict:
         if fresh:
             existing = sheets.spreadsheets().values().get(
                 spreadsheetId=SHEET_ID,
-                range=tab_range("A:AA"),
+                range=tab_range("A:AC"),
                 valueRenderOption="FORMATTED_VALUE",
             ).execute()
             start = first_writable_row(existing.get("values") or [], len(fresh))
@@ -205,7 +207,7 @@ def append_purchase_orders(raw_rows, sales_order_number: str = "") -> dict:
             end = start + len(values) - 1
             sheets.spreadsheets().values().update(
                 spreadsheetId=SHEET_ID,
-                range=tab_range(f"A{start}:R{end}"),
+                range=tab_range(f"A{start}:{LAST_WRITTEN_COLUMN}{end}"),
                 valueInputOption="USER_ENTERED",
                 body={"values": values},
             ).execute()

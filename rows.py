@@ -1,8 +1,10 @@
 """Turn reviewed purchase-order lines into POs-tab rows.
 
-Columns A–K stay in the mailbox layout. The vendor estimated shipment
-date and the customer shipment date are left blank. SO No. is the Zoho
-sales order number when this submit just created one.
+Columns follow PO/SO/INV TRACKING 2026: Qty in I, Partial Quantity shipped
+and Balance Quantity Owed in J and K (left blank), Unit Price in L, the
+Sales Amount formula in M, PAYMENT STATUS in Q and SHIPMENT STATUS in T.
+The vendor estimated shipment date and the customer shipment date are left
+blank. SO No. is the Zoho sales order number when this submit just created one.
 """
 
 import re
@@ -128,16 +130,18 @@ def build_sheet_values(rows: list[dict], start: int, sales_order_number: str = "
             "",
             "",
             row.get("FIG#", ""),
-            number_cell(row.get("Qty", "")),
-            number_cell(row.get("Unit Price", "")),
-            f"=J{line}*I{line}",
-            "",
-            "",
-            "",
-            PAYMENT_STATUS,
-            "",
-            "",
-            SHIPMENT_STATUS,
+            number_cell(row.get("Qty", "")),       # I Quantity Ordered
+            "",                                      # J Partial Quantity shipped
+            "",                                      # K Balance Quantity Owed
+            number_cell(row.get("Unit Price", "")),  # L Unit Price
+            f"=L{line}*I{line}",                     # M Sales Amount
+            "",                                      # N Sales Remarks
+            "",                                      # O INVOICE #
+            "",                                      # P PRO FORMA INVOICE #
+            PAYMENT_STATUS,                          # Q PAYMENT STATUS
+            "",                                      # R PAYMENT APPLICATION DATED
+            "",                                      # S Invoice Date
+            SHIPMENT_STATUS,                         # T SHIPMENT STATUS
         ])
     return values
 

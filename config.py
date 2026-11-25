@@ -12,12 +12,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GOOGLE_IMPERSONATE = os.environ.get("GOOGLE_IMPERSONATE", "thenning@lunkenheimercvc.com").strip()
 
-SHEET_ID = os.environ.get("SHEET_ID", "1col-aNAhDKJyqTg6Bai3MSIwPPS_-ELby_F-FKxCi2s").strip()
+SHEET_ID = os.environ.get("SHEET_ID", "1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE").strip()
 SHEET_TAB = os.environ.get("SHEET_TAB", "PO/SO/INV TRACKING 2026").strip() or "PO/SO/INV TRACKING 2026"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 INVENTORY_SHEET_ID = os.environ.get(
     "INVENTORY_SHEET_ID",
-    "1col-aNAhDKJyqTg6Bai3MSIwPPS_-ELby_F-FKxCi2s",
+    "1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE",
 ).strip()
 INVENTORY_TAB = os.environ.get("INVENTORY_TAB", "INVENTORY").strip() or "INVENTORY"
 

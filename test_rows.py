@@ -32,7 +32,7 @@ class RowLayoutTest(unittest.TestCase):
         ])
         values = build_sheet_values(rows, 5)
         self.assertEqual(values[0], [
-            "Acme", "PO-9", "", "", "11/18/2026", "", "", "V-100", 2, 12.5, "=J5*I5",
+            "Acme", "PO-9", "", "", "11/18/2026", "", "", "V-100", 2, "", "", 12.5, "=L5*I5",
             "", "", "", "Not Paid", "", "", "NOT SHIIPED",
         ])
         filled = validate_rows([{
@@ -51,16 +51,19 @@ class RowLayoutTest(unittest.TestCase):
         self.assertEqual(placed[5], "")
         self.assertEqual(placed[6], "")
         self.assertEqual(placed[4], "11/18/2026")
-        self.assertEqual(placed[10], "=J8*I8")
-        self.assertEqual(placed[14], "Not Paid")
-        self.assertEqual(placed[17], "NOT SHIIPED")
+        self.assertEqual(placed[12], "=L8*I8")
+        self.assertEqual(placed[16], "Not Paid")
+        self.assertEqual(placed[19], "NOT SHIIPED")
+        self.assertEqual(len(placed), 20)
         self.assertEqual(values[1][0], "'=cmd")
         self.assertEqual(values[1][2], "")
         self.assertEqual(values[1][5], "")
         self.assertEqual(values[1][6], "")
         self.assertEqual(values[1][8], 3)
-        self.assertEqual(values[1][9], 1000)
-        self.assertEqual(values[1][10], "=J6*I6")
+        self.assertEqual(values[1][9], "")
+        self.assertEqual(values[1][10], "")
+        self.assertEqual(values[1][11], 1000)
+        self.assertEqual(values[1][12], "=L6*I6")
 
     def test_the_zoho_number_is_written_in_column_d(self):
         rows = validate_rows([{
@@ -123,16 +126,16 @@ class OpenRowTest(unittest.TestCase):
     def test_a_zero_sales_amount_is_reusable(self):
         rows = [
             ["Company"],
-            ["Acme", "PO-1", "", "", "", "", "", "", "2", "5", "$10.00"],
-            [""] * 10 + ["$0.00"],
-            [""] * 10 + ["$0.00"],
+            ["Acme", "PO-1", "", "", "", "", "", "", "2", "", "", "5", "$10.00"],
+            [""] * 12 + ["$0.00"],
+            [""] * 12 + ["$0.00"],
         ]
         self.assertEqual(first_writable_row(rows, 2), 3)
 
     def test_a_zero_sales_amount_with_anything_else_is_kept(self):
         rows = [
             ["Company"],
-            ["Acme"] + [""] * 9 + ["$0.00"],
+            ["Acme"] + [""] * 11 + ["$0.00"],
             [],
         ]
         self.assertEqual(first_writable_row(rows, 1), 3)
@@ -140,11 +143,28 @@ class OpenRowTest(unittest.TestCase):
     def test_the_run_must_be_long_enough(self):
         rows = [
             ["Company"],
-            [""] * 10 + ["$0.00"],
+            [""] * 12 + ["$0.00"],
             ["Acme"],
             [],
         ]
         self.assertEqual(first_writable_row(rows, 2), 4)
+
+
+    def test_a_zero_in_the_old_sales_amount_column_is_not_reusable(self):
+        rows = [
+            ["Company"],
+            [""] * 10 + ["$0.00"],
+            [],
+        ]
+        self.assertEqual(first_writable_row(rows, 1), 3)
+
+    def test_tracking_columns_beyond_the_written_ones_keep_a_row_used(self):
+        rows = [
+            ["Company"],
+            [""] * 12 + ["$0.00"] + [""] * 15 + ["Backlog note in AC"],
+            [],
+        ]
+        self.assertEqual(first_writable_row(rows, 1), 3)
 
 
 class AppTest(unittest.TestCase):

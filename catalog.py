@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from figures import clear_figures, list_figures
+from figures import clear_figures, figure_sizes, list_figures
 from zoho_customers import (
     clear_cached_lists,
     configured,
@@ -80,6 +80,7 @@ def _fetch() -> dict:
     terms = list_payment_terms() if books else []
     methods = list_delivery_methods() if books else []
     figures = list_figures()
+    sizes = figure_sizes()
     return {
         "ready": True,
         "saved": time.time(),
@@ -89,6 +90,7 @@ def _fetch() -> dict:
         "paymentTerms": terms,
         "deliveryMethods": methods,
         "figures": figures,
+        "figureSizes": sizes,
     }
 
 
@@ -106,6 +108,8 @@ def _read_file():
     for key in ("customers", "items", "paymentTerms", "deliveryMethods", "figures"):
         if not isinstance(payload.get(key), list):
             payload[key] = []
+    if not isinstance(payload.get("figureSizes"), dict):
+        payload["figureSizes"] = {}
     return payload
 
 

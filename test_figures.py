@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from figures import figure_choices
+from figures import _read_figures, figure_choices
 
 
 class FigureMatchTest(unittest.TestCase):
@@ -25,3 +25,24 @@ class FigureMatchTest(unittest.TestCase):
             result = figure_choices(["FIG 214002", "nope"])
         self.assertEqual(result["matches"], {"FIG 214002": "214002"})
         self.assertEqual(result["figures"], catalog)
+
+
+class ReadFiguresTest(unittest.TestCase):
+    def test_reads_the_size_beside_each_figure(self):
+        values = [
+            ["SIZE", "Fig. No. QB"],
+            ['1/8"', "906BS001"],
+            ['1"', "906-BS-010"],
+            ["", "180TSS010"],
+            ['1/2"', "214002"],
+            ['3/4"', "214 002"],
+        ]
+        sheets = mock.MagicMock()
+        sheets.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": values,
+        }
+        with mock.patch("googleapiclient.discovery.build", return_value=sheets), \
+                mock.patch("figures.credentials"):
+            figures, sizes = _read_figures()
+        self.assertEqual(figures, ["906BS001", "906-BS-010", "180TSS010", "214002"])
+        self.assertEqual(sizes, {"906BS001": '1/8"', "906BS010": '1"'})

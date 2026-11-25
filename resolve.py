@@ -2,6 +2,7 @@
 
 import json
 import re
+from fractions import Fraction
 
 import requests
 
@@ -22,6 +23,8 @@ ABBREVIATIONS = {
     "EPDM": "EPDM",
 }
 SKIP_WORDS = {"THE", "AND", "FOR", "WITH", "VALVE", "VLV"}
+UNICODE_FRACTIONS = {"½": "1/2", "¼": "1/4", "¾": "3/4", "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8"}
+SIZE_NUMBER = r"\d+(?:\s*-\s*|\s+)\d+/\d+|\d+/\d+|\d*\.\d+|\d+"
 
 
 def resolve_order(rows, catalog, ask=None) -> dict:
@@ -30,6 +33,7 @@ def resolve_order(rows, catalog, ask=None) -> dict:
     terms = catalog.get("paymentTerms") or []
     methods = catalog.get("deliveryMethods") or []
     figures = catalog.get("figures") or []
+    sizes = catalog.get("figureSizes") or {}
     company_text = _first(rows, "Company")
     company_ranked = rank_customers(company_text, customers) if company_text else []
     company = best_match(company_text, customers) if company_text else None
@@ -57,11 +61,13 @@ def resolve_order(rows, catalog, ask=None) -> dict:
         seen.add(figure)
         description = _text(row.get("Description"))
         chosen_figure, figure_options = match_figure(figure, figures)
+        if not chosen_figure:
+            chosen_figure = _sheet_spelling(family_figure(figure, description, sizes), figures)
         if chosen_figure:
             figure_matches[figure] = chosen_figure
         elif figure_options:
             figure_pending.append({"source": figure, "options": figure_options})
-        chosen_item, item_options = match_item(figure, description, items)
+        chosen_item, item_options = match_item(figure, description, items, sizes)
         if chosen_item:
             item_matches[figure] = {"id": chosen_item["id"], "name": chosen_item["name"]}
         elif item_options:
@@ -136,8 +142,18 @@ def resolve_order(rows, catalog, ask=None) -> dict:
     }
 
 
-def match_item(figure: str, description: str, items: list[dict]):
-    codes = loose_codes(figure) | loose_codes(description)
+def match_item(figure: str, description: str, items: list[dict], sizes: dict | None = None):
+    chosen, options = _match_item_codes(figure, description, items, sizes)
+    if chosen is None:
+        sized = _item_for_figure(family_figure(figure, description, sizes), items)
+        if sized:
+            return sized, []
+    return chosen, options
+
+
+def _match_item_codes(figure: str, description: str, items: list[dict], sizes: dict | None = None):
+    figure_codes = loose_codes(figure)
+    codes = figure_codes | loose_codes(description)
     hints = description_words(description)
     ranked = []
     for item in items:
@@ -148,22 +164,30 @@ def match_item(figure: str, description: str, items: list[dict]):
         names = set(re.findall(r"[A-Z]{3,}", f"{item.get('name', '')} {item.get('sku', '')}".upper()))
         overlap = len(hints & names)
         score = 100 - (extra * 5) + (overlap * 20)
+        # The FIG# is the part number; a code found only in the description,
+        # such as a CR13 trim, is a weaker hint and must not tie with it.
+        if any(pair[1] in figure_codes for pair in found):
+            score += 30
         if item.get("status") == "active":
             score += 1
         ranked.append((score, extra, overlap, item))
     ranked.sort(key=lambda row: (-row[0], row[1], row[3].get("name", "")))
     if not ranked:
-        return _match_item_words(figure, description, items)
+        return _match_item_words(figure, description, items, sizes)
     if len(ranked) == 1:
         if ranked[0][1] <= 6:
             return ranked[0][3], []
         return None, [ranked[0][3]]
     if ranked[0][0] >= ranked[1][0] + 15:
         return ranked[0][3], []
+    close = [row[3] for row in ranked if row[0] > ranked[0][0] - 15]
+    sized = pick_by_size(close, figure, description, sizes)
+    if sized:
+        return sized, []
     return None, [row[3] for row in ranked[:8]]
 
 
-def _match_item_words(figure: str, description: str, items: list[dict]):
+def _match_item_words(figure: str, description: str, items: list[dict], sizes: dict | None = None):
     query = _words(f"{figure} {description}")
     if not query:
         return None, []
@@ -178,7 +202,154 @@ def _match_item_words(figure: str, description: str, items: list[dict]):
         return None, []
     if len(ranked) == 1 or (ranked[0][0] >= 0.9 and ranked[0][0] >= ranked[1][0] + 0.08):
         return ranked[0][1], []
+    close = [row[1] for row in ranked if row[0] > ranked[0][0] - 0.08]
+    sized = pick_by_size(close, figure, description, sizes)
+    if sized:
+        return sized, []
     return None, [row[1] for row in ranked[:8]]
+
+
+def pick_by_size(candidates: list[dict], figure: str, description: str, sizes: dict | None):
+    """Break a tie between close items with the SIZE column of the inventory tab.
+
+    A size printed in the PDF must equal the inventory size of exactly one
+    candidate. Otherwise nothing is picked and Gemini decides.
+    """
+    if not sizes or len(candidates) < 2:
+        return None
+    wanted = pdf_sizes(figure, description)
+    if not wanted:
+        return None
+    hits = [item for item in candidates if size_value(item_size(item, sizes)) in wanted]
+    return hits[0] if len(hits) == 1 else None
+
+
+def family_figure(figure: str, description: str, sizes: dict | None) -> str:
+    """Find the inventory figure from its family and size, such as MSP_18374X1/4 -> 1837002.
+
+    An inventory figure is its family followed by a three-digit size code
+    (1837 + 002). The family must appear in the PDF figure, not right after
+    another digit, and its SIZE must be a size printed in the PDF. Exactly one
+    inventory figure must qualify; the longest family wins over a shorter one
+    that is part of it.
+    """
+    if not sizes:
+        return ""
+    wanted = pdf_sizes(figure, description)
+    text = _code(figure)
+    if not wanted or not text:
+        return ""
+    hits = []
+    for key, size in sizes.items():
+        family = key[:-3]
+        if not re.search(r"\d{3}$", key) or len(family) < 3 or not re.search(r"\d", family):
+            continue
+        if size_value(size) not in wanted:
+            continue
+        if any(start == 0 or not text[start - 1].isdigit() for start in _starts(text, family)):
+            hits.append((len(family), key))
+    if not hits:
+        return ""
+    longest = max(length for length, _key in hits)
+    best = {key for length, key in hits if length == longest}
+    return best.pop() if len(best) == 1 else ""
+
+
+def _starts(text: str, part: str):
+    start = text.find(part)
+    while start != -1:
+        yield start
+        start = text.find(part, start + 1)
+
+
+def _item_for_figure(key: str, items: list[dict]):
+    """The one Zoho item named after this inventory figure, such as BRONZE - 1837002."""
+    if not key:
+        return None
+    found = []
+    for item in items:
+        name = item.get("name", "")
+        tail = name.split(" - ", 1)[1] if " - " in name else ""
+        if key in (_code(tail), _code(name), _code(item.get("sku", ""))):
+            found.append(item)
+    active = [item for item in found if item.get("status") == "active"]
+    if len(active) == 1:
+        return active[0]
+    return found[0] if len(found) == 1 else None
+
+
+def _sheet_spelling(key: str, figures: list[str]) -> str:
+    if not key:
+        return ""
+    return next((figure for figure in figures if _code(figure) == key), "")
+
+
+def pdf_sizes(figure: str, description: str) -> set:
+    """Sizes printed in the PDF: the first one in the description, and any in the figure.
+
+    In the figure only a fraction (X1/4, 1-1/2) or a number with an inch mark counts,
+    because bare digits there are usually part of the part number.
+    """
+    found = set()
+    first = pdf_size(description)
+    if first is not None:
+        found.add(first)
+    text = _plain_size_text(figure)
+    for match in re.finditer(r"(?<![\d/.])(\d+-\d+/\d+|\d+/\d+)(?![\d/])", text):
+        value = size_value(match.group(1))
+        if value is not None:
+            found.add(value)
+    for match in re.finditer(r"(?<![\d/.])(\d+(?:\.\d+)?)\s*(?:\"|''|IN\b|INCH)", text):
+        value = size_value(match.group(1))
+        if value is not None:
+            found.add(value)
+    return found
+
+
+def item_size(item: dict, sizes: dict) -> str:
+    name = item.get("name", "")
+    tail = name.split(" - ", 1)[1] if " - " in name else ""
+    for key in (_code(tail), _code(name), _code(item.get("sku", ""))):
+        if key and key in sizes:
+            return sizes[key]
+    return ""
+
+
+def pdf_size(description: str):
+    """The first size in a description: one with an inch mark, else a size it starts with."""
+    text = _plain_size_text(description)
+    marked = re.search(rf"(?<![\w/.-])({SIZE_NUMBER})\s*(?:\"|''|IN\b|INCH)", text)
+    if marked:
+        return size_value(marked.group(1))
+    leading = re.match(rf"\s*({SIZE_NUMBER})(?=\s|$)", text)
+    if leading:
+        return size_value(leading.group(1))
+    return None
+
+
+def size_value(text: str):
+    """1-1/2", 1 1/2, 1.5 IN and 1½ all become Fraction(3, 2)."""
+    cleaned = _plain_size_text(text)
+    cleaned = re.sub(r"INCH(?:ES)?|\bIN\b|[\"']", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    try:
+        mixed = re.fullmatch(r"(\d+)(?:\s*-\s*|\s+)(\d+)/(\d+)", cleaned)
+        if mixed:
+            value = int(mixed.group(1)) + Fraction(int(mixed.group(2)), int(mixed.group(3)))
+        elif re.fullmatch(r"\d+/\d+|\d*\.\d+|\d+", cleaned):
+            value = Fraction(cleaned)
+        else:
+            return None
+    except (ValueError, ZeroDivisionError):
+        return None
+    return value if value > 0 else None
+
+
+def _plain_size_text(value) -> str:
+    text = str(value or "").upper().replace("”", '"').replace("″", '"').replace("“", '"')
+    for symbol, fraction in UNICODE_FRACTIONS.items():
+        text = text.replace(symbol, f" {fraction}")
+    return text
 
 
 def match_figure(figure: str, figures: list[str]):

@@ -14,25 +14,36 @@ from sheet import SheetError, credentials
 
 logger = logging.getLogger("purchase_desk")
 _lock = threading.Lock()
-_cache = {"figures": None, "until": 0.0}
+_cache = {"figures": None, "sizes": None, "until": 0.0}
 
 
 def clear_figures():
     with _lock:
         _cache["figures"] = None
+        _cache["sizes"] = None
         _cache["until"] = 0.0
 
 
 def list_figures() -> list[str]:
+    return _load()[0]
+
+
+def figure_sizes() -> dict[str, str]:
+    """Column B SIZE for each column C figure, keyed without spaces, dashes, or case."""
+    return _load()[1]
+
+
+def _load() -> tuple[list[str], dict[str, str]]:
     now = time.monotonic()
     with _lock:
         if _cache["figures"] is not None and now < _cache["until"]:
-            return _cache["figures"]
-    figures = _read_figures()
+            return _cache["figures"], _cache["sizes"]
+    figures, sizes = _read_figures()
     with _lock:
         _cache["figures"] = figures
+        _cache["sizes"] = sizes
         _cache["until"] = time.monotonic() + 600
-    return figures
+    return figures, sizes
 
 
 def figure_choices(sources) -> dict:
@@ -60,7 +71,7 @@ def figure_choices(sources) -> dict:
     return {"figures": catalog, "matches": matches}
 
 
-def _read_figures() -> list[str]:
+def _read_figures() -> tuple[list[str], dict[str, str]]:
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
 
@@ -69,7 +80,7 @@ def _read_figures() -> list[str]:
         sheets = build("sheets", "v4", credentials=credentials(), cache_discovery=False)
         result = sheets.spreadsheets().values().get(
             spreadsheetId=INVENTORY_SHEET_ID,
-            range=f"'{title}'!C:C",
+            range=f"'{title}'!B:C",
         ).execute()
     except SheetError as error:
         raise error
@@ -77,20 +88,31 @@ def _read_figures() -> list[str]:
         raise SheetError("The inventory spreadsheet could not be read.") from error
     figures = []
     seen = set()
+    sizes = {}
+    conflicting = set()
     for index, row in enumerate(result.get("values") or []):
-        if not row:
+        if len(row) < 2:
             continue
-        figure = " ".join(str(row[0]).split())
+        size = " ".join(str(row[0]).split())
+        figure = " ".join(str(row[1]).split())
         if not figure:
             continue
         if index == 0 and figure.casefold() == "fig. no. qb":
             continue
         key = _figure_key(figure)
-        if not key or key in seen:
+        if not key:
+            continue
+        if size:
+            if sizes.get(key, size) != size:
+                conflicting.add(key)
+            sizes[key] = size
+        if key in seen:
             continue
         seen.add(key)
         figures.append(figure)
-    return figures
+    for key in conflicting:
+        sizes.pop(key, None)
+    return figures, sizes
 
 
 def _figure_key(value: str) -> str:

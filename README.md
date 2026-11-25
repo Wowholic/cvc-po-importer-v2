@@ -1,212 +1,186 @@
 # Order Entry
 
-Order Entry turns a customer purchase-order PDF into a reviewed order. Drop in the PDF, check the customer, dates, and lines, then send it on.
+Order Entry turns a customer's purchase-order PDF into an order. Gemini reads the PDF and the app fills a form. A person checks the form, then sends the order to:
 
-It can append the lines to the **PO/SO/INV TRACKING 2026** tab and save a draft sales order in Zoho Books, with the PDF attached. That tab and the inventory figures live in the same spreadsheet. The Zoho order stays a draft. The app does not email the customer, open the order, or create customers or items.
+- the **PO/SO/INV TRACKING 2026** tab of the [Sales Order Tracker](https://docs.google.com/spreadsheets/d/1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE/edit) spreadsheet, and/or
+- **Zoho Books**, as a draft sales order with the PDF attached.
 
-## What a person does
+The app never emails the customer, confirms the Zoho order, or creates customers or items.
 
-1. Sign in at `/login`. One shared username and password covers the whole desk. The session cookie lasts 12 hours.
-2. Drop a PDF on the homepage, or choose one. Only a PDF is accepted, and it must be under 32 MB.
-3. Press **Read purchase order**. Gemini reads the PDF. The app then matches the customer, figure numbers, items, payment terms, and delivery method against the saved lists.
-4. Review the form. The PDF stays on the left. Correct anything that was read or matched wrong. Spreadsheet figure numbers and Zoho items are separate fields, because the inventory sheet and Zoho Books do not always use the same name.
-5. Choose **Spreadsheet**, **Zoho Books**, or both, then press **Submit**.
-6. A successful submit returns to the homepage. A green banner under the drop area says what was added and links to the spreadsheet and the sales order. Choosing the next PDF clears that banner.
-7. A failed submit stays on the review form with the error, and the lines remain filled in.
+## Tools it uses
 
-**Sync Zoho Books Data** replaces the saved customer, item, payment-term, delivery-method, and inventory-figure lists. Use it after those lists change in Zoho Books or on the inventory sheet. The first request after a cold start builds the same file if `cache/catalog.json` is missing.
+| Tool | What for |
+| --- | --- |
+| **Gemini** (Google AI) | Reads the PDF. Helps match a field only when the app can't decide on its own. |
+| **Google Sheets** | Writes order lines to the tracking tab. Reads figure numbers and sizes from the INVENTORY tab. |
+| **Zoho Books** | Reads customers, items, payment terms and delivery methods. Creates the draft sales order. |
+| **Flask** (Python) | Runs the web app. |
 
-## How a PDF becomes an order
+## How to use it
 
-```
-PDF
-  -> Gemini reads the lines          POST /api/extract
-  -> local match against the catalog POST /api/resolve
-  -> Gemini only for what is left
-  -> person reviews the form
-  -> spreadsheet, Zoho Books, or both POST /api/submit
-```
+1. Sign in. One shared username and password covers the whole team. The session lasts 12 hours.
+2. Drop a PDF on the page (under 32 MB) and press **Read purchase order**.
+3. Check the form. The PDF shows on the left. Correct anything that was read or matched wrong.
+4. Tick **Spreadsheet**, **Zoho Books**, or both, and press **Submit**.
+5. A green banner confirms what was added, with links to the spreadsheet and the sales order. If something fails, the form stays open with the error.
 
-### What Gemini is asked to read
+**Sync Zoho Books Data** (top right) reloads the saved customers, items, payment terms, delivery methods and inventory figures. Press it after any of those change in Zoho or in the INVENTORY tab. The time of the last sync is shown next to the button, in Cincinnati time.
 
-The first call sends the PDF and asks for JSON lines with these fields:
+## Fields
+
+What Gemini reads from the PDF:
 
 | Field | Meaning |
 | --- | --- |
-| Company | The customer that issued the purchase order. Cincinnati Valve and CVC are the supplier when they only appear as the company receiving the order, so they are not used as Company in that case. |
-| CUSTOMER PO # | The customer's own purchase order number. |
-| PO DATE | The date the purchase order was issued, converted to MM-DD-YYYY. Ship dates and due dates are ignored. |
-| Payment Terms | The wording printed on the PDF, such as Net 30. |
-| Delivery Method | The carrier or ship method printed on the PDF. |
-| Other | The customer's shipping account number, when the PDF prints one. Often beside the carrier or ship method. Empty when there is none. It is not written to the spreadsheet. |
-| FIG# | The part, figure, or manufacturer part identifier. |
-| Description | The words on that line that describe the part. Used for matching. It is not a spreadsheet column. |
-| Qty | Quantity, as a plain number. |
-| Unit Price | Price for one unit, as a plain number. |
+| Company | The customer who sent the order. Never Cincinnati Valve or CVC. |
+| CUSTOMER PO # | The customer's purchase order number. |
+| PO DATE | The date the order was issued (MM-DD-YYYY). |
+| Payment Terms | As printed, e.g. Net 30. |
+| Delivery Method | The carrier or ship method. |
+| Other | The customer's shipping account number, if printed. |
+| FIG# | The part or figure number. |
+| Description | The line's description. Used only for matching. |
+| Qty | Quantity. |
+| Unit Price | Price per unit. |
 
-A missing value stays an empty string. The model is `GEMINI_MODEL` in `.env`. The default, `gemini-flash-latest`, follows Google's current Flash model, so the underlying model can change.
+Fields the person fills in by hand:
 
-### How matching works
+| Field | Meaning |
+| --- | --- |
+| VENDOR PO # | Written to the spreadsheet. |
+| Customer Notes | Sent to Zoho. |
 
-The catalog is the saved copy of Zoho customers, Zoho items, Zoho payment terms, Zoho delivery methods, and inventory figure numbers. Matching tries the catalog locally first. Gemini is called again only for the fields that are still ambiguous. That second call may be skipped entirely when every field already has one clear match.
+Two fields are matched for each line:
 
-A customer matches on the company name. One strong candidate is selected immediately. Several close candidates, or no local candidate, go to Gemini. If Gemini returns nothing usable, the closest local customer is still proposed.
+| Field | Meaning |
+| --- | --- |
+| Fig# for Spreadsheet | The figure number from column C of the INVENTORY tab. |
+| Fig# for Zoho Books | The Zoho item. |
 
-A Zoho item matches when the figure code or the description shares a distinctive code with the item name or SKU. One clear winner is selected. Close ties go to Gemini, which must choose an id from the offered items. A figure number for the spreadsheet is matched the same way against column C of the inventory tab (`Fig. No. QB`). Spacing, dashes, and letter case are ignored for that comparison.
+## How matching works
 
-Payment terms and delivery methods match when the PDF wording equals a Zoho name, contains it, or shares most of its words. Anything less definite goes to Gemini, which must copy an id from the offered choices.
+The app first compares what Gemini read with the saved lists, without calling Gemini again. The customer, payment terms and delivery method are matched by name.
 
-The person can override every match before submitting.
+A line's Zoho item and inventory figure are matched in this order:
 
-### Spreadsheet
+1. **Part number.** A code from the PDF's FIG# matches an item name or SKU. If it clearly wins, it's chosen. A code found only in the description, such as `CR13`, counts for less.
+2. **Size.** If several items are close (e.g. every size of `906BS`), the app reads the size from the PDF. That size comes from the description (`1"`, `1-1/2 IN`, or a leading `1`) or the FIG# (the `1/4` in `MSP_18374X1/4`). It is then compared with column B (**SIZE**) of the INVENTORY tab. If exactly one item has that size, it's chosen.
+3. **Family + size.** An inventory figure is a family plus a 3-digit size code: `1837002` = family `1837` + size `002`. If the FIG# contains a family and the PDF gives a size, the app finds that inventory row and the Zoho item with the same name (`BRONZE - 1837002`).
+4. **Gemini.** Anything still undecided goes to Gemini in one call. Gemini can only choose from the options the app offers.
 
-Checked by default. Lines are appended to `SHEET_TAB` in `SHEET_ID`. Both default to the **PO/SO/INV TRACKING 2026** tab of `1col-aNAhDKJyqTg6Bai3MSIwPPS_-ELby_F-FKxCi2s`. The **INVENTORY** tab in that same file is only read, for figure numbers in column C.
+The person can change every match before submitting.
 
-New lines start on the first row that is empty, or whose only value is a `$0.00` sales amount from the prefilled `=J*I` formula. Every cell the app writes is centered. If column B already contains that customer PO number, those lines are left out and the banner says so. Qty and Unit Price are numbers. Unit Price and the sales amount are currency. Text that starts with `=`, `+`, or `@` is prefixed with a quote so it cannot become a formula.
+## Spreadsheet
+
+- **File:** [Sales Order Tracker](https://docs.google.com/spreadsheets/d/1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE/edit) (`1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE`)
+- **Writes to:** the **PO/SO/INV TRACKING 2026** tab
+- **Reads from:** the **INVENTORY** tab, column B (SIZE) and column C (Fig. No. QB)
+
+New lines go on the first free row. A row is free if it's empty, or if its only value is `$0.00` in column M from the prefilled formula. If the customer PO number is already in column B, the line is skipped and the banner says so.
 
 | Column | What is written |
 | --- | --- |
-| A | Company. The header cell has no title. |
+| A | Company |
 | B | CUSTOMER PO # |
-| C | VENDOR PO #. Typed on the form. Gemini does not invent it. |
-| D | SO No. The Zoho number without the `SO-` prefix, when this submit created one. `SO-1223066` is written as `1223066`. Left blank when only the spreadsheet is written. |
-| E | PO DATE, as `m/d/yyyy`. `11-18-2026` on the form becomes `11/18/2026` on the sheet. |
-| F | VENDOR ESTIMATED SHIPMENT DATE. Left blank. |
-| G | CUSTOMER SHIPMENT DATE. Left blank. |
-| H | FIG# for the spreadsheet |
-| I | Qty |
-| J | Unit Price |
-| K | Sales Amount, as the formula `=J*I` |
-| L–N, P–Q | Left blank. |
-| O | PAYMENT STATUS. The existing dropdown choice `Not Paid`. |
-| R | SHIPMENT STATUS. The existing dropdown choice `NOT SHIIPED`, spelled the way the sheet already has it. |
+| C | VENDOR PO # |
+| D | SO No. from Zoho, without `SO-` (only when Zoho was ticked too) |
+| E | PO DATE, as `m/d/yyyy` |
+| H | FIG# for Spreadsheet |
+| I | Quantity Ordered |
+| L | Unit Price |
+| M | Sales Amount, formula `=L*I` |
+| Q | PAYMENT STATUS: `Not Paid` |
+| T | SHIPMENT STATUS: `NOT SHIIPED` (spelled as in the sheet's dropdown) |
 
-Columns S through AA, the invoice, payment, and shipping notes, are left untouched. Payment Terms, Delivery Method, Other, Customer Notes, and Description are not spreadsheet columns.
+All other columns are left empty or untouched. That includes J–K (partial and balance quantities) and everything from U onwards.
 
-The Google connection is a service account. `GOOGLE_SERVICE_ACCOUNT_JSON` is the account JSON on one line, not a path to a file. When `GOOGLE_IMPERSONATE` is set, the account acts as that user through domain-wide delegation. The Sheets scope is `https://www.googleapis.com/auth/spreadsheets`.
+## Zoho Books
 
-### Zoho Books
+Creates one **draft** sales order and attaches the PDF. It needs a customer, payment term, delivery method, PO date, and a Zoho item, quantity and price on every line.
 
-Optional. Submit creates one draft sales order and attaches the original PDF.
+- The customer PO number goes in **Reference #**.
+- **Other** goes in the custom field `cf_other`, and **Customer Notes** in Customer Notes.
+- The custom field `cf_shipment_status` is set to **Not Shipped**. Both custom fields must exist in Zoho.
 
-The order needs a Zoho customer, a payment term, a delivery method, a PO date, and one Zoho item with a quantity and rate on every non-blank line. The customer PO number is sent as the reference number when it is filled in. The shipment-status custom field is set to **Not Shipped**. The app does not update the customer record.
-
-| Form field | Where it comes from | Where it goes |
-| --- | --- | --- |
-| Other | The shipping account number read from the PDF, when one is printed. It can be edited. | Zoho custom field `cf_other`. Not the spreadsheet. |
-| Customer Notes | Empty. Typed by hand. | The sales order's Customer Notes. Not the spreadsheet. |
-
-Zoho must already contain an active sales-order custom field `cf_shipment_status` whose choices include `Not Shipped`. Sending **Other** also requires `cf_other`.
-
-The OAuth scopes on the refresh token are `ZohoBooks.contacts.READ`, `ZohoBooks.settings.READ`, and `ZohoBooks.salesorders.CREATE`. The app reads customers, items, payment terms, delivery methods, and sales-order fields. The only writes are the draft and its PDF attachment.
-
-Use `accounts.zoho.eu` and `www.zohoapis.eu` when the Books organization is on the EU domain. The sales-order link in the banner is `https://books.zoho.com/app/<organization id>#/salesorders/<id>`, with the host changed to match `ZOHO_API_DOMAIN`.
-
-If both destinations are selected, Zoho Books is saved first. Zoho's sales order number, without the `SO-` prefix, is then written in column D of every line added to the spreadsheet. A Zoho failure stops the submit before the spreadsheet is touched, and the review form stays open. If Zoho succeeds and the spreadsheet write then fails, the banner shows the sales order link and the spreadsheet error.
+If both destinations are ticked, Zoho goes first so its SO number can be written in column D. If Zoho fails, nothing is written to the spreadsheet.
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env      # then fill in the values below
 ```
 
-Fill `.env` before reading a PDF or sending an order. `.env` stays out of git. `.env.example` lists every variable and the empty defaults.
+`.env` holds the passwords and keys and is never committed.
 
-| Variable | Required for | What it is |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | Reading a PDF and the leftover match | Gemini Developer API key. |
-| `GEMINI_MODEL` | Those same calls | Model id. Default `gemini-flash-latest`. |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | The spreadsheet and the inventory figures | Service account JSON, on one line. |
-| `GOOGLE_IMPERSONATE` | Sheets, when the service account uses delegation | The Google user the service account acts as. |
-| `SHEET_ID` | Writing orders | Spreadsheet id. Default `1col-aNAhDKJyqTg6Bai3MSIwPPS_-ELby_F-FKxCi2s`. |
-| `SHEET_TAB` | Writing orders | Tab name. Default `PO/SO/INV TRACKING 2026`. |
-| `INVENTORY_SHEET_ID` | Figure matching | Same spreadsheet by default. |
-| `INVENTORY_TAB` | Figure matching | Tab name. Default `INVENTORY`. Figure numbers are read from column C. |
-| `ZOHO_CLIENT_ID` | Zoho reads and the draft | OAuth client. |
-| `ZOHO_CLIENT_SECRET` | Zoho | OAuth secret. |
-| `ZOHO_REFRESH_TOKEN` | Zoho | Refresh token with the three scopes above. |
-| `ZOHO_ORGANIZATION_ID` | Zoho | Books organization id. |
-| `ZOHO_ACCOUNTS_DOMAIN` | Zoho | Default `accounts.zoho.com`. |
-| `ZOHO_API_DOMAIN` | Zoho | Default `www.zohoapis.com`. |
-| `PORT` | Local `python app.py` | Default `8080`. |
-| `AUTH_USER` | Sign-in | Shared username. |
-| `AUTH_PASSWORD` | Sign-in | At least 12 characters. |
-| `AUTH_SECRET` | Sign-in | Random signing key, at least 32 characters. Not the password. `openssl rand -hex 32` |
-
-Five failed sign-ins from the same address within 15 minutes lock that address for 15 minutes.
+| Variable | What it is |
+| --- | --- |
+| `GEMINI_API_KEY` | Gemini API key. |
+| `GEMINI_MODEL` | Gemini model. Default `gemini-flash-latest`. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Google service account JSON, on one line. |
+| `GOOGLE_IMPERSONATE` | The Google user the service account acts as. That user needs edit access to the spreadsheet. |
+| `SHEET_ID` / `SHEET_TAB` | Spreadsheet and tab to write to. Defaults: the Sales Order Tracker, `PO/SO/INV TRACKING 2026`. |
+| `INVENTORY_SHEET_ID` / `INVENTORY_TAB` | Where the inventory is read. Defaults: the same spreadsheet, `INVENTORY`. |
+| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | Zoho API access. Token scopes: `ZohoBooks.contacts.READ`, `ZohoBooks.settings.READ`, `ZohoBooks.salesorders.CREATE`. |
+| `ZOHO_ORGANIZATION_ID` | Zoho Books organization id. |
+| `ZOHO_ACCOUNTS_DOMAIN` / `ZOHO_API_DOMAIN` | Default `accounts.zoho.com` / `www.zohoapis.com`. Use the `.eu` versions for an EU account. |
+| `AUTH_USER` / `AUTH_PASSWORD` | Shared sign-in. Password: at least 12 characters. |
+| `AUTH_SECRET` | Random key for the session cookie, at least 32 characters (`openssl rand -hex 32`). |
+| `PORT` | Local port. Default `8080`. |
 
 ## Run
 
-```bash
-.venv/bin/gunicorn --bind 127.0.0.1:8080 --timeout 180 app:app
-```
-
-Open `http://127.0.0.1:8080`.
-
-The timeout is 180 seconds because a PDF read, a catalog refresh, and a Zoho save can each take a while. For a local process without gunicorn:
+Locally:
 
 ```bash
 PORT=8080 .venv/bin/python app.py
 ```
 
-That command uses Flask's development server. Restart it after code changes. Debug reload is off.
+Open http://127.0.0.1:8080. Restart after code changes; it does not reload by itself.
 
-On startup the app warms the catalog in the background, unless it is running the tests.
+On a server:
+
+```bash
+.venv/bin/gunicorn --bind 127.0.0.1:8080 --timeout 180 app:app
+```
+
+The 180-second timeout leaves room for slow PDF reads, syncs and Zoho saves.
 
 ## Pages and API
 
-Every route except login, logout, and static files requires the session cookie. An API call without it returns `401`.
+Everything except the sign-in page needs a signed-in session. Without one, the API answers `401`. Five wrong passwords in 15 minutes lock that address out for 15 minutes.
 
 | Method and path | What it does |
 | --- | --- |
-| `GET /login` | Sign-in page. |
-| `POST /login` | Checks the shared username and password and sets the `po_session` cookie. |
-| `POST /logout` | Clears the cookie. |
-| `GET /` | The desk: drop area, review form, and the spreadsheet link. |
-| `POST /api/extract` | Multipart field `pdf`. Returns `{rows}` from Gemini. |
-| `GET /api/catalog` | Returns the saved lists. Builds them on first use. |
-| `POST /api/catalog/refresh` | Fetches Zoho and the inventory figures again and replaces `cache/catalog.json`. |
-| `POST /api/resolve` | JSON `{rows}`. Returns the customer, payment term, delivery method, figure, and item matches. |
-| `GET /api/customers?company=` | Customer search. Used when the saved catalog is not ready. |
-| `POST /api/items` | Item list. Used when the saved catalog is not ready. |
-| `POST /api/item-matches` | JSON `{figures}`. Matches figure numbers to Zoho items. |
-| `POST /api/order-options` | JSON `{paymentTerms, deliveryMethod}`. Loads and matches those two lists. |
-| `POST /api/figures` | JSON `{figures}`. Matches figure numbers to the inventory sheet. |
-| `POST /api/submit` | Multipart or JSON. Writes the selected destinations. |
-
-`/api/submit` fields:
-
-| Field | Meaning |
-| --- | --- |
-| `spreadsheet` | `"true"` or `"false"`. |
-| `zoho` | `"true"` or `"false"`. |
-| `rows` | JSON array of spreadsheet lines. |
-| `order` | JSON object for the Zoho draft. Sent only when Zoho is checked. |
-| `pdf` | The original PDF. Sent only when Zoho is checked. |
-
-A normal read uses `/api/extract` and `/api/resolve`. The other list routes are the fallback when the catalog has not been saved yet.
+| `GET /login`, `POST /login` | Sign-in page and sign-in. |
+| `POST /logout` | Sign out. |
+| `GET /` | The main page. |
+| `POST /api/extract` | Upload a PDF (`pdf`). Gemini reads it and returns the lines. |
+| `POST /api/resolve` | Send the lines. Returns the customer, terms, delivery method, figure and item matches. |
+| `POST /api/submit` | Send the order. Fields: `spreadsheet` and `zoho` (`"true"`/`"false"`), `rows` (JSON lines), `order` (Zoho details), `pdf`. |
+| `GET /api/catalog` | The saved Zoho and inventory lists. |
+| `POST /api/catalog/refresh` | Reload those lists (the Sync button). |
+| `GET /api/customers?company=`, `POST /api/items`, `POST /api/item-matches`, `POST /api/order-options`, `POST /api/figures` | Fallbacks used only when the saved lists aren't ready yet. |
 
 ## Costs
 
-Each Gemini call prints one line in the terminal that is running the app, and the same line is written to the browser console. Refresh the page after a restart so the browser has the script that prints it.
+Only Gemini is charged per use. Google Sheets and Zoho Books calls have no per-call cost beyond the existing subscriptions.
+
+Every Gemini call prints its cost in the terminal running the app and in the browser console:
 
 ```text
-Gemini read PDF (gemini-3.8-flash): 18,420 input tokens, 312 output tokens, $0.0150
+Gemini read PDF (gemini-3.8-flash): 4,769 input tokens, 1,339 output tokens including 1,169 thinking, $0.0086
+Gemini match leftovers (gemini-3.8-flash): 996 input tokens, 6,937 output tokens including 6,850 thinking, $0.0268
 ```
 
-A second line appears when leftovers are sent back to Gemini. Its label is `match leftovers`, `match figures`, `match items`, or `match options`. Input tokens are what was sent, including the PDF. Output tokens include thinking tokens. The dollar amount is the paid-tier list price for the model named in the response.
+A typical PDF costs around one to four cents. These are estimates from the list prices in `_RATES` in `extract_po.py`. Flash costs $0.75 per million input tokens and $3.75 per million output tokens until December 31, 2026, then $1.50 and $7.50.
 
-The rates live in `_RATES` in `extract_po.py` and follow [Gemini Developer API pricing](https://ai.google.dev/gemini-api/docs/pricing). Flash is $0.75 per million input tokens and $3.75 per million output tokens through December 31, 2026, then $1.50 and $7.50. `gemini-flash-latest` uses that Flash price when the response does not name a more specific model. An unknown model still prints the token counts and says `price unknown`. A key that is still on the free tier is not actually charged.
+The real bill:
 
-That line is an estimate for the call that just finished. The bill for the API key is in Google AI Studio and Google Cloud:
-
-- Pricing table: https://ai.google.dev/gemini-api/docs/pricing
-- How billing tiers work: https://ai.google.dev/gemini-api/docs/billing
-- The project's charges: https://console.cloud.google.com/billing
-
-Zoho Books and Google Sheets calls are not included in that estimate.
+- Charges for the API key: https://console.cloud.google.com/billing
+- Gemini prices: https://ai.google.dev/gemini-api/docs/pricing
+- Billing tiers (free vs paid): https://ai.google.dev/gemini-api/docs/billing
 
 ## Tests
 
@@ -214,22 +188,21 @@ Zoho Books and Google Sheets calls are not included in that estimate.
 .venv/bin/python -m unittest
 ```
 
-The tests do not call Gemini, Zoho, or Google Sheets.
+The tests don't call Gemini, Zoho or Google Sheets.
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `app.py` | Pages, sign-in, and the API. |
-| `extract_po.py` | The PDF prompt, the Gemini call, and the token price line. |
-| `resolve.py` | Local matching, then one Gemini call for whatever is left. |
+| `app.py` | Pages, sign-in and API routes. |
+| `extract_po.py` | Reads the PDF with Gemini and prints the cost. |
+| `resolve.py` | Matching: part number, size, family + size, then Gemini. |
 | `catalog.py` | Saves the Zoho and inventory lists in `cache/catalog.json`. |
-| `figures.py` | Reads inventory figure numbers from column C. |
-| `rows.py` | Cleans lines and maps them onto the tracking-tab columns. |
-| `sheet.py` | Appends rows to the tracking tab, reusing a `$0.00` sales-amount row when that is all the row contains. |
-| `zoho_customers.py` | Reads Zoho customers, items, payment terms, and delivery methods. |
-| `zoho_orders.py` | Creates the draft sales order and attaches the PDF. |
-| `auth.py` | The shared login, the session cookie, and the lockout. |
+| `figures.py` | Reads figure numbers and sizes from the INVENTORY tab. |
+| `rows.py` | Puts each line into the tracking-tab columns. |
+| `sheet.py` | Finds the first free row and writes to the spreadsheet. |
+| `zoho_customers.py` | Reads customers, items, payment terms and delivery methods from Zoho. |
+| `zoho_orders.py` | Creates the Zoho draft and attaches the PDF. |
+| `auth.py` | Shared sign-in, session cookie and lockout. |
 | `config.py` | Reads `.env`. |
-| `static/app.js` | The desk in the browser. |
-| `templates/index.html` | The drop area and the review form. |
+| `templates/`, `static/` | The web page. |
