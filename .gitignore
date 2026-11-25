@@ -28,5 +28,8 @@ instance/
 # Vercel’s local project link
 .vercel/
 
+# Saved Zoho and inventory lists
+cache/
+
 # Logs
 *.log

@@ -22,7 +22,7 @@ from config import (
     ZOHO_ORGANIZATION_ID,
     ZOHO_REFRESH_TOKEN,
 )
-from extract_po import ExtractError
+from extract_po import ExtractError, log_gemini_usage
 
 logger = logging.getLogger("purchase_desk")
 
@@ -222,6 +222,18 @@ def _remember(key: str, loader):
     return collected
 
 
+def clear_cached_lists():
+    with _lock:
+        for key in ("customers", "items", "payment_terms", "delivery_methods"):
+            _cache[key] = None
+            _cache[f"{key}_until"] = 0.0
+    for key in ("customers", "items"):
+        try:
+            os.remove(_disk_cache(key))
+        except OSError:
+            pass
+
+
 def list_customers() -> list[dict]:
     return _remember("customers", _fetch_customers)
 
@@ -325,7 +337,9 @@ Leave "id" empty only when no item shares any of that figure code. Do not invent
     if not response.ok:
         raise ExtractError("The item list could not be matched.")
     try:
-        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        body = response.json()
+        log_gemini_usage("match items", body)
+        text = body["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise ExtractError("The item list could not be matched.") from error
@@ -382,7 +396,9 @@ Leave the id empty only when no option is that payment term or delivery method. 
     if not response.ok:
         raise ExtractError("The payment terms could not be matched.")
     try:
-        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        body = response.json()
+        log_gemini_usage("match options", body)
+        text = body["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise ExtractError("The payment terms could not be matched.") from error
@@ -595,25 +611,116 @@ def _item_score(figure: str, item: dict) -> float:
     return best
 
 
-def best_match(company: str, customers: list[dict]) -> dict | None:
-    query = _tokens(company)
+def rank_customers(company: str, customers: list[dict]) -> list[tuple]:
+    query = _words(company)
     if not query:
-        return None
+        return []
     ranked = []
     for customer in customers:
-        names = [customer.get("name", ""), customer.get("company", "")]
-        score = max((_score(query, _tokens(name)) for name in names), default=0)
-        if score >= MATCH_FLOOR:
-            ranked.append((score, customer))
+        best = None
+        for raw in (customer.get("name", ""), customer.get("company", "")):
+            cand = _words(raw)
+            if not cand:
+                continue
+            score = _name_score(query, cand)
+            if score < 0.45:
+                continue
+            found = (score, cand)
+            if best is None or found > best:
+                best = found
+        if best:
+            ranked.append((best[0], _name_score(query, _words(customer.get("name", ""))), best[1], customer))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked
+
+
+def best_match(company: str, customers: list[dict]) -> dict | None:
+    ranked = rank_customers(company, customers)
     if not ranked:
         return None
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.05:
-        leading = [item[1] for item in ranked if ranked[0][0] - item[0] < 0.05]
-        names = {_tokens(item.get("name", "")) for item in leading}
-        if len(names) != 1:
-            return None
-    return ranked[0][1]
+    top = ranked[0]
+    if len(ranked) == 1:
+        return top[3]
+    if top[0] >= 0.97:
+        others = [item for item in ranked if item[2] != top[2]]
+        if not others or top[0] > others[0][0]:
+            return top[3]
+    close = [item for item in ranked if top[0] - item[0] < 0.08]
+    if len({item[2] for item in close}) == 1:
+        return top[3]
+    if top[0] >= 0.9 and top[0] >= ranked[1][0] + 0.08:
+        return top[3]
+    return None
+
+
+def _words(value: str) -> tuple[str, ...]:
+    words = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split()
+    return tuple(word for word in words if word not in LEGAL_WORDS and len(word) > 1)
+
+
+def _name_score(query: tuple[str, ...], cand: tuple[str, ...]) -> float:
+    if not query or not cand:
+        return 0
+    if query == cand:
+        return 1
+    compact_query = "".join(query)
+    compact_cand = "".join(cand)
+    if _edit(compact_query, compact_cand) <= 1 and min(len(compact_query), len(compact_cand)) >= 8:
+        return 0.98
+    hits = [max(_word_score(word, other) for other in query) for word in cand]
+    covered = sum(1 for hit in hits if hit >= 0.75)
+    if covered:
+        strength = sum(hits) / len(hits)
+        return min(0.97, 0.55 + (0.12 * covered) + (0.2 * strength))
+    return _chunk_score(query, cand)
+
+
+def _word_score(left: str, right: str) -> float:
+    if left == right:
+        return 1
+    if len(left) >= 4 and (left in right or right in left):
+        return 0.86
+    if _edit(left, right) <= 1 and min(len(left), len(right)) >= 5:
+        return 0.9
+    shared = _pieces(left) & _pieces(right)
+    if shared and min(len(left), len(right)) >= 6:
+        return min(0.84, 0.4 + (0.08 * len(shared)))
+    return 0
+
+
+def _pieces(word: str) -> set[str]:
+    if len(word) < 4:
+        return set()
+    return {word[index:index + 4] for index in range(len(word) - 3)}
+
+
+def _chunk_score(query: tuple[str, ...], cand: tuple[str, ...]) -> float:
+    left = set().union(*(_pieces(word) for word in query)) if query else set()
+    right = set().union(*(_pieces(word) for word in cand)) if cand else set()
+    if not left or not right:
+        return 0
+    shared = len(left & right)
+    if shared < 2:
+        return 0
+    return min(0.7, shared / max(len(right), 1))
+
+
+def _edit(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > 2:
+        return 3
+    previous = list(range(len(right) + 1))
+    for index, first in enumerate(left, 1):
+        current = [index]
+        for column, second in enumerate(right, 1):
+            current.append(min(
+                previous[column] + 1,
+                current[column - 1] + 1,
+                previous[column - 1] + (first != second),
+            ))
+        previous = current
+    return previous[-1]
 
 
 def _tokens(value: str) -> tuple[str, ...]:

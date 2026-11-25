@@ -25,7 +25,7 @@ SALES_ORDER_PATH = "/books/v3/salesorders"
 SHIPMENT_API = "cf_shipment_status"
 SHIPMENT_VALUE = "Not Shipped"
 OTHER_API = "cf_other"
-DATE_RE = re.compile(r"^(0[1-9]|[12][0-9]|3[01])-(0[1-9]|1[0-2])-([0-9]{4})$")
+DATE_RE = re.compile(r"^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-([0-9]{4})$")
 NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _lock = threading.Lock()
 _fields = {"until": 0.0, "values": None}
@@ -41,7 +41,7 @@ def sales_order_payload(order: dict, fields: list[dict]) -> dict:
         "date": _iso_date(order.get("date")),
         "delivery_method": _text(order.get("deliveryMethod")),
         "line_items": lines,
-        "notes": "",
+        "notes": _notes(order.get("customerNotes")),
         "terms": "",
         "is_update_customer": False,
         "contact_persons_associated": [],
@@ -177,6 +177,16 @@ def _text(value) -> str:
     return " ".join(str(value or "").split())
 
 
+def _notes(value) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)[:5000]
+
+
 def _days(value) -> int:
     if isinstance(value, bool):
         raise OrderInputError("Choose a Zoho Books payment term before creating a sales order.")
@@ -191,8 +201,8 @@ def _days(value) -> int:
 def _iso_date(value) -> str:
     match = DATE_RE.fullmatch(_text(value))
     if not match:
-        raise OrderInputError("PO DATE needs to be DD-MM-YYYY.")
-    day, month, year = match.groups()
+        raise OrderInputError("PO DATE needs to be MM-DD-YYYY.")
+    month, day, year = match.groups()
     return f"{year}-{month}-{day}"
 
 

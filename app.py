@@ -22,11 +22,13 @@ from auth import (
     verify_session,
 )
 from config import MAX_PDF_BYTES, SHEET_URL
-from extract_po import ExtractError, extract_bytes
-from rows import RowError
+from extract_po import ExtractError, extract_bytes, gemini_usage, reset_gemini_usage
+from rows import RowError, validate_rows
 from figures import figure_choices
 from sheet import SheetError, append_purchase_orders
-from zoho_customers import ZohoError, customer_choices, item_catalog, item_choices, list_customers, list_items, order_option_choices
+from catalog import load_catalog
+from resolve import ask_leftovers, resolve_order
+from zoho_customers import ZohoError, customer_choices, item_catalog, item_choices, order_option_choices
 from zoho_orders import OrderInputError, create_draft_sales_order, prepare_draft_sales_order
 
 logging.basicConfig(level=logging.INFO)
@@ -61,13 +63,9 @@ _warm_started = False
 
 def _warm_zoho():
     try:
-        from zoho_customers import configured
-        if not configured():
-            return
-        list_customers()
-        list_items()
+        load_catalog()
     except Exception:
-        app.logger.exception("zoho list warm failed")
+        app.logger.exception("catalog warm failed")
 
 
 def _start_warm():
@@ -76,6 +74,18 @@ def _start_warm():
         return
     _warm_started = True
     threading.Thread(target=_warm_zoho, daemon=True).start()
+
+
+@app.before_request
+def track_gemini_usage():
+    reset_gemini_usage()
+
+
+def respond(payload):
+    usage = gemini_usage()
+    if usage and isinstance(payload, dict):
+        payload = {**payload, "usage": usage}
+    return jsonify(payload)
 
 
 @app.before_request
@@ -145,7 +155,44 @@ def extract():
     except Exception:
         app.logger.exception("purchase order read failed")
         return fail("The purchase order could not be read.", 502)
-    return jsonify(rows=rows)
+    return respond({"rows": rows})
+
+
+@app.get("/api/catalog")
+def catalog():
+    try:
+        return jsonify(load_catalog())
+    except (ZohoError, SheetError) as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("catalog load failed")
+        return fail("The saved lists could not be loaded.", 502)
+
+
+@app.post("/api/catalog/refresh")
+def catalog_refresh():
+    try:
+        return jsonify(load_catalog(refresh=True))
+    except (ZohoError, SheetError) as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("catalog refresh failed")
+        return fail("The lists could not be refreshed.", 502)
+
+
+@app.post("/api/resolve")
+def resolve():
+    body = request.get_json(silent=True) or {}
+    rows = body.get("rows")
+    if not isinstance(rows, list):
+        return fail("Send the purchase order lines.", 400)
+    try:
+        return respond(resolve_order(rows[:200], load_catalog(), ask_leftovers))
+    except (ZohoError, SheetError) as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("purchase order match failed")
+        return fail("The purchase order could not be matched.", 502)
 
 
 @app.get("/api/customers")
@@ -184,14 +231,14 @@ def item_matches():
         app.logger.exception("item match failed")
         return fail("Zoho Books could not match items.", 502)
     result.pop("items", None)
-    return jsonify(result)
+    return respond(result)
 
 
 @app.post("/api/order-options")
 def order_options():
     body = request.get_json(silent=True) or {}
     try:
-        return jsonify(order_option_choices(
+        return respond(order_option_choices(
             body.get("paymentTerms", ""),
             body.get("deliveryMethod", ""),
         ))
@@ -209,7 +256,7 @@ def figures():
     if not isinstance(sources, list):
         return fail("Send the figure numbers to match.", 400)
     try:
-        return jsonify(figure_choices(sources[:200]))
+        return respond(figure_choices(sources[:200]))
     except SheetError as error:
         return fail(str(error), 502)
     except Exception:
@@ -249,6 +296,11 @@ def submit():
     if not to_sheet and not to_zoho:
         return fail("Choose the spreadsheet, Zoho Books, or both.", 400)
     result = {"spreadsheet": None, "zoho": None}
+    if to_sheet:
+        try:
+            validate_rows(body.get("rows"))
+        except RowError as error:
+            return fail(str(error), 400)
     draft = None
     if to_zoho:
         try:
@@ -260,30 +312,47 @@ def submit():
         except Exception:
             app.logger.exception("sales order check failed")
             return fail("Zoho Books could not save the draft sales order.", 502)
-    if to_sheet:
-        try:
-            result["spreadsheet"] = append_purchase_orders(body.get("rows"))
-        except RowError as error:
-            return fail(str(error), 400)
-        except SheetError as error:
-            return fail(str(error), 502)
-        except Exception:
-            app.logger.exception("spreadsheet write failed")
-            return fail("The lines could not be added to the spreadsheet.", 502)
-    if draft is not None:
         try:
             result["zoho"] = create_draft_sales_order(draft, pdf_bytes, filename)
         except ZohoError as error:
-            result["zoho"] = {"created": False, "message": str(error)}
-            if result["spreadsheet"] is None:
-                return fail(str(error), 502)
+            return fail(str(error), 502)
         except Exception:
             app.logger.exception("sales order create failed")
-            message = "Zoho Books could not save the draft sales order."
-            result["zoho"] = {"created": False, "message": message}
-            if result["spreadsheet"] is None:
+            return fail("Zoho Books could not save the draft sales order.", 502)
+    if to_sheet:
+        sales_order_number = _sales_order_number(result["zoho"])
+        try:
+            result["spreadsheet"] = append_purchase_orders(body.get("rows"), sales_order_number)
+        except RowError as error:
+            if result["zoho"] is None:
+                return fail(str(error), 400)
+            result["spreadsheet"] = _sheet_failure(str(error))
+        except SheetError as error:
+            if result["zoho"] is None:
+                return fail(str(error), 502)
+            result["spreadsheet"] = _sheet_failure(str(error))
+        except Exception:
+            app.logger.exception("spreadsheet write failed")
+            message = "The lines could not be added to the spreadsheet."
+            if result["zoho"] is None:
                 return fail(message, 502)
+            result["spreadsheet"] = _sheet_failure(message)
     return jsonify(result)
+
+
+def _sales_order_number(zoho) -> str:
+    if not isinstance(zoho, dict):
+        return ""
+    number = str(zoho.get("number") or "").strip()
+    if number.casefold() == "the sales order":
+        return ""
+    if number[:3].casefold() == "so-":
+        number = number[3:].strip()
+    return number
+
+
+def _sheet_failure(message: str) -> dict:
+    return {"written": 0, "skipped": [], "message": message}
 
 
 @app.errorhandler(413)

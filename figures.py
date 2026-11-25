@@ -9,12 +9,18 @@ import time
 import requests
 
 from config import GEMINI_API_KEY, GEMINI_MODEL, INVENTORY_SHEET_ID, INVENTORY_TAB
-from extract_po import ExtractError
+from extract_po import ExtractError, log_gemini_usage
 from sheet import SheetError, credentials
 
 logger = logging.getLogger("purchase_desk")
 _lock = threading.Lock()
 _cache = {"figures": None, "until": 0.0}
+
+
+def clear_figures():
+    with _lock:
+        _cache["figures"] = None
+        _cache["until"] = 0.0
 
 
 def list_figures() -> list[str]:
@@ -119,7 +125,9 @@ Treat spacing, dashes, and letter case as the same number. Do not invent a figur
     if not response.ok:
         raise ExtractError("The figure list could not be matched.")
     try:
-        text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        body = response.json()
+        log_gemini_usage("match figures", body)
+        text = body["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise ExtractError("The figure list could not be matched.") from error

@@ -1,7 +1,8 @@
 """Turn reviewed purchase-order lines into POs-tab rows.
 
-Columns A–K stay in the mailbox layout. SO No., the vendor estimated
-shipment date, and the customer shipment date are left blank.
+Columns A–K stay in the mailbox layout. The vendor estimated shipment
+date and the customer shipment date are left blank. SO No. is the Zoho
+sales order number when this submit just created one.
 """
 
 import re
@@ -17,8 +18,11 @@ COLUMNS = [
 ]
 
 NUMBER_COLUMNS = {"Qty", "Unit Price"}
-ORDER_FIELDS = ("Payment Terms", "Delivery Method")
-DATE_RE = re.compile(r"^(0[1-9]|[12][0-9]|3[01])-(0[1-9]|1[0-2])-[0-9]{4}$")
+ORDER_FIELDS = ("Payment Terms", "Delivery Method", "Other", "Description")
+DATE_RE = re.compile(r"^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-[0-9]{4}$")
+# Existing choices on PO/SO/INV TRACKING 2026. The shipment choice is spelled this way on the sheet.
+PAYMENT_STATUS = "Not Paid"
+SHIPMENT_STATUS = "NOT SHIIPED"
 
 
 class RowError(ValueError):
@@ -92,7 +96,7 @@ def validate_rows(rows) -> list[dict]:
             continue
         date = row["PO DATE"]
         if date and not DATE_RE.fullmatch(date):
-            raise RowError(f"Line {index}: PO DATE needs to be DD-MM-YYYY.")
+            raise RowError(f"Line {index}: PO DATE needs to be MM-DD-YYYY.")
         for column in NUMBER_COLUMNS:
             if row[column] and not re.fullmatch(r"-?\d+(\.\d+)?", row[column]):
                 raise RowError(f"Line {index}: {column} needs to be a plain number.")
@@ -102,7 +106,16 @@ def validate_rows(rows) -> list[dict]:
     return checked
 
 
-def build_sheet_values(rows: list[dict], start: int) -> list[list]:
+def sheet_date(value: str) -> str:
+    text = str(value or "").strip()
+    if not DATE_RE.fullmatch(text):
+        return ""
+    month, day, year = text.split("-")
+    return f"{int(month)}/{int(day)}/{year}"
+
+
+def build_sheet_values(rows: list[dict], start: int, sales_order_number: str = "") -> list[list]:
+    so_number = clean_text(sales_order_number)
     values = []
     for offset, row in enumerate(rows):
         line = start + offset
@@ -110,14 +123,21 @@ def build_sheet_values(rows: list[dict], start: int) -> list[list]:
             row.get("Company", ""),
             row.get("CUSTOMER PO #", ""),
             row.get("VENDOR PO #", ""),
-            "",
-            row.get("PO DATE", ""),
+            so_number,
+            sheet_date(row.get("PO DATE", "")),
             "",
             "",
             row.get("FIG#", ""),
             number_cell(row.get("Qty", "")),
             number_cell(row.get("Unit Price", "")),
             f"=J{line}*I{line}",
+            "",
+            "",
+            "",
+            PAYMENT_STATUS,
+            "",
+            "",
+            SHIPMENT_STATUS,
         ])
     return values
 

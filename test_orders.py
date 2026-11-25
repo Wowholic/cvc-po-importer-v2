@@ -21,7 +21,7 @@ def sample_order():
     return {
         "customerId": "100",
         "reference": "PO-9",
-        "date": "18-11-2026",
+        "date": "11-18-2026",
         "paymentTermsLabel": "Net 30",
         "paymentTermsDays": "30",
         "deliveryMethod": "BEST WAY",
@@ -54,6 +54,14 @@ class SalesOrderPayloadTest(unittest.TestCase):
         self.assertEqual(
             {item["value"] for item in payload["custom_fields"]},
             {"Not Shipped", "acct 4451"},
+        )
+
+    def test_customer_notes_are_sent_to_zoho(self):
+        raw = sample_order()
+        raw["customerNotes"] = "Leave at the dock.\nCall first."
+        self.assertEqual(
+            sales_order_payload(raw, FIELDS)["notes"],
+            "Leave at the dock.\nCall first.",
         )
 
     def test_a_blank_other_field_is_left_off(self):

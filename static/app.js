@@ -64,7 +64,37 @@ let optionLoad = Promise.resolve({
   deliveryMethods: [],
   matches: {},
 });
-const HELD_FIELDS = ["Payment Terms", "Delivery Method", "Other"];
+const HELD_FIELDS = ["Payment Terms", "Delivery Method", "Other", "Customer Notes", "Description"];
+let catalog = null;
+let resolution = null;
+
+const refreshLists = document.getElementById("refresh-lists");
+const syncDialog = document.getElementById("sync-dialog");
+
+function keepPageOpen(event) {
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+refreshLists.addEventListener("click", async () => {
+  refreshLists.disabled = true;
+  syncDialog.hidden = false;
+  window.addEventListener("beforeunload", keepPageOpen);
+  try {
+    const response = await fetch("/api/catalog/refresh", { method: "POST" });
+    catalog = await readJson(response);
+    customers = catalog.customers || [];
+    zohoItems = catalog.items || [];
+    figureCatalog = catalog.figures || [];
+    showError("");
+  } catch (error) {
+    showError(error.message);
+  }
+  window.removeEventListener("beforeunload", keepPageOpen);
+  syncDialog.hidden = true;
+  refreshLists.disabled = false;
+});
+loadCatalog().catch((error) => showError(error.message));
 
 browse.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -169,17 +199,23 @@ function useFile(next) {
   setPhase("ready");
 }
 
-function clearFile() {
-  if ((phase === "review" || phase === "sending") && isDirty()) {
-    if (!window.confirm("Remove this PDF and the lines you are editing?")) return;
-  }
+function forgetFile() {
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   objectUrl = null;
   file = null;
   fileInput.value = "";
   pdf.removeAttribute("src");
+  pdf.title = "Purchase order PDF";
   lines.replaceChildren();
   order.replaceChildren();
+  summary.textContent = "";
+}
+
+function clearFile() {
+  if ((phase === "review" || phase === "sending") && isDirty()) {
+    if (!window.confirm("Remove this PDF and the lines you are editing?")) return;
+  }
+  forgetFile();
   result.hidden = true;
   showError("");
   setPhase("idle");
@@ -196,6 +232,8 @@ async function readPdf() {
     const response = await fetch("/api/extract", { method: "POST", body });
     const data = await readJson(response);
     const rows = Array.isArray(data.rows) && data.rows.length ? data.rows : [blankRow()];
+    await loadCatalog();
+    resolution = await resolveRows(rows);
     renderLines(rows);
     summary.textContent = !data.rows || !data.rows.length
       ? "Nothing was found in the PDF. Fill in the order and the line below, or add more."
@@ -222,7 +260,31 @@ function renderLines(rows) {
   renumber();
 }
 
+async function loadCatalog() {
+  if (catalog && catalog.ready) return catalog;
+  const response = await fetch("/api/catalog");
+  catalog = await readJson(response);
+  customers = catalog.customers || [];
+  zohoItems = catalog.items || [];
+  figureCatalog = catalog.figures || [];
+  return catalog;
+}
+
+async function resolveRows(rows) {
+  const response = await fetch("/api/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rows }),
+    signal: AbortSignal.timeout(90000),
+  });
+  return readJson(response);
+}
+
 async function requestItems() {
+  if (catalog && catalog.ready) {
+    zohoItems = catalog.items || [];
+    return { connected: Boolean(catalog.connected), items: zohoItems };
+  }
   try {
     const response = await fetch("/api/items", {
       method: "POST",
@@ -244,6 +306,7 @@ async function requestItems() {
 }
 
 async function requestItemMatches(rows) {
+  if (resolution) return { matches: resolution.items || {} };
   const figures = rows
     .map((row) => (row["FIG#"] == null ? "" : String(row["FIG#"]).trim()))
     .filter(Boolean);
@@ -263,6 +326,10 @@ async function requestItemMatches(rows) {
 }
 
 async function requestFigures(rows) {
+  if (catalog && catalog.ready && resolution) {
+    figureCatalog = catalog.figures || [];
+    return { figures: figureCatalog, matches: resolution.figures || {} };
+  }
   const sources = rows
     .map((row) => (row["FIG#"] == null ? "" : String(row["FIG#"]).trim()))
     .filter(Boolean);
@@ -290,6 +357,17 @@ function firstFilled(rows, field) {
 }
 
 function requestOrderOptions(paymentTerms, deliveryMethod) {
+  if (catalog && catalog.ready && resolution) {
+    return Promise.resolve({
+      connected: Boolean(catalog.connected),
+      paymentTerms: catalog.paymentTerms || [],
+      deliveryMethods: catalog.deliveryMethods || [],
+      matches: {
+        paymentTerms: resolution.paymentTerms,
+        deliveryMethod: resolution.deliveryMethod,
+      },
+    });
+  }
   return fetch("/api/order-options", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -369,7 +447,8 @@ function renderOrder(rows) {
     none: "No delivery methods were found in Zoho Books.",
     unmatched: "Choose a Zoho Books delivery method.",
   }));
-  fields.append(otherField());
+  fields.append(otherField(firstFilled(rows, "Other")));
+  fields.append(customerNotesField());
   order.append(head, fields);
   order.querySelectorAll("textarea").forEach(fitField);
 }
@@ -859,7 +938,7 @@ function zohoOptionControl(extracted, spec) {
   return wrap;
 }
 
-function otherField() {
+function otherField(extracted) {
   const wrap = document.createElement("label");
   wrap.className = "field";
   const label = document.createElement("span");
@@ -869,11 +948,27 @@ function otherField() {
   note.textContent = "(e.g. for customer shipment account number)";
   const input = document.createElement("input");
   input.dataset.field = "Other";
-  input.value = "";
+  input.value = extracted || "";
   input.placeholder = "Empty";
   input.autocomplete = "off";
   input.spellcheck = false;
   wrap.append(label, note, input);
+  return wrap;
+}
+
+function customerNotesField() {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  const label = document.createElement("span");
+  label.textContent = "Customer Notes";
+  const input = document.createElement("textarea");
+  input.dataset.field = "Customer Notes";
+  input.value = "";
+  input.rows = 2;
+  input.placeholder = "Empty";
+  input.autocomplete = "off";
+  input.spellcheck = true;
+  wrap.append(label, input);
   return wrap;
 }
 
@@ -1012,6 +1107,26 @@ function companyControl(extracted) {
 }
 
 async function loadCustomers(extracted, wrap, setChosen, note, renderChoices) {
+  if (catalog && catalog.ready) {
+    await Promise.resolve();
+    if (!wrap.isConnected) return;
+    if (!catalog.connected) {
+      const plain = fieldControl("Company", { Company: extracted });
+      wrap.replaceWith(plain);
+      plain.querySelectorAll("textarea").forEach(fitField);
+      return;
+    }
+    customers = catalog.customers || [];
+    const match = resolution && resolution.company;
+    if (match && match.id && match.name) setChosen(match.name, match.id);
+    else if (!customers.length) {
+      setChosen("", "");
+      note.hidden = false;
+      note.textContent = "No customers were found in Zoho Books.";
+    } else setChosen("", "");
+    renderChoices("");
+    return;
+  }
   try {
     const response = await fetch(`/api/customers?company=${encodeURIComponent(extracted)}`, {
       signal: AbortSignal.timeout(180000),
@@ -1066,6 +1181,7 @@ function chevron() {
 }
 
 function fieldControl(field, row) {
+  if (DATE_FIELDS.has(field)) return dateControl(row[field]);
   const wrap = document.createElement("label");
   wrap.className = "field";
   const label = document.createElement("span");
@@ -1077,14 +1193,12 @@ function fieldControl(field, row) {
     note.textContent = "Only for spreadsheet, column C.";
     wrap.append(note);
   }
-  const isDate = DATE_FIELDS.has(field);
   const long = !SHORT_FIELDS.has(field);
   const input = document.createElement(long ? "textarea" : "input");
   input.dataset.field = field;
-  if (isDate) input.type = "date";
   const raw = row[field] == null ? "" : String(row[field]);
-  input.value = isDate ? toInputDate(raw) : raw;
-  if (!isDate) input.placeholder = "Empty";
+  input.value = raw;
+  input.placeholder = "Empty";
   input.autocomplete = "off";
   input.spellcheck = false;
   if (field === "Qty" || field === "Unit Price") input.inputMode = "decimal";
@@ -1105,10 +1219,85 @@ function paint(entry) {
   output.textContent = money == null ? "—" : money;
 }
 
+function dateControl(raw) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  const label = document.createElement("span");
+  label.textContent = "PO DATE";
+  const box = document.createElement("div");
+  box.className = "date-field";
+  const input = document.createElement("input");
+  input.dataset.field = "PO DATE";
+  input.value = String(raw || "").trim();
+  input.placeholder = "MM-DD-YYYY";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.inputMode = "numeric";
+  const picker = document.createElement("input");
+  picker.type = "date";
+  picker.className = "date-picker";
+  picker.tabIndex = -1;
+  picker.value = toInputDate(input.value);
+  picker.setAttribute("aria-hidden", "true");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "date-open";
+  button.setAttribute("aria-label", "Choose a date");
+  button.append(calendarIcon());
+  const openPicker = () => {
+    const iso = toInputDate(input.value);
+    if (iso) picker.value = iso;
+    if (typeof picker.showPicker === "function") {
+      try {
+        picker.showPicker();
+        return;
+      } catch (error) {
+        picker.focus();
+      }
+    }
+    picker.click();
+  };
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    openPicker();
+  });
+  picker.addEventListener("change", () => {
+    input.value = fromInputDate(picker.value);
+    input.classList.remove("is-invalid");
+  });
+  box.append(input, picker, button);
+  wrap.append(label, box);
+  return wrap;
+}
+
+function calendarIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  rect.setAttribute("x", "2");
+  rect.setAttribute("y", "3");
+  rect.setAttribute("width", "12");
+  rect.setAttribute("height", "11");
+  rect.setAttribute("rx", "1.5");
+  rect.setAttribute("stroke", "currentColor");
+  rect.setAttribute("stroke-width", "1.4");
+  const top = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  top.setAttribute("d", "M2 6.5h12M5 2v2.5M11 2v2.5");
+  top.setAttribute("stroke", "currentColor");
+  top.setAttribute("stroke-width", "1.4");
+  top.setAttribute("stroke-linecap", "round");
+  svg.append(rect, top);
+  return svg;
+}
+
 function toInputDate(value) {
   const text = String(value || "").trim();
-  const dayFirst = /^(\d{2})-(\d{2})-(\d{4})$/.exec(text);
-  if (dayFirst) return `${dayFirst[3]}-${dayFirst[2]}-${dayFirst[1]}`;
+  const monthFirst = /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])-(\d{4})$/.exec(text);
+  if (monthFirst) return `${monthFirst[3]}-${monthFirst[1]}-${monthFirst[2]}`;
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
   return "";
 }
@@ -1116,15 +1305,13 @@ function toInputDate(value) {
 function fromInputDate(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
   if (!match) return "";
-  return `${match[3]}-${match[2]}-${match[1]}`;
+  return `${match[2]}-${match[3]}-${match[1]}`;
 }
 
 function readInputs(root, values) {
   root.querySelectorAll("input, textarea").forEach((input) => {
     if (!input.dataset.field) return;
-    values[input.dataset.field] = input.type === "date"
-      ? fromInputDate(input.value)
-      : input.value.trim();
+    values[input.dataset.field] = input.value.trim();
   });
 }
 
@@ -1210,9 +1397,9 @@ function validate(rows) {
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (isBlank(row)) continue;
-    if (row["PO DATE"] && !/^(0[1-9]|[12]\d|3[01])-(0[1-9]|1[0-2])-\d{4}$/.test(row["PO DATE"])) {
+    if (row["PO DATE"] && !/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])-\d{4}$/.test(row["PO DATE"])) {
       markInvalid(index, "PO DATE");
-      return "PO DATE needs to be DD-MM-YYYY.";
+      return "PO DATE needs to be MM-DD-YYYY.";
     }
     for (const field of ["Qty", "Unit Price"]) {
       if (row[field] && !isNumber(row[field])) {
@@ -1248,6 +1435,7 @@ function zohoOrder(rows) {
   const terms = order.querySelector('[data-field="Payment Terms"]');
   const delivery = order.querySelector('[data-field="Delivery Method"]');
   const other = order.querySelector('[data-field="Other"]');
+  const notes = order.querySelector('[data-field="Customer Notes"]');
   const entries = [...lines.querySelectorAll(".entry")];
   const header = rows.find((row) => !isBlank(row)) || rows[0] || {};
   return {
@@ -1259,6 +1447,7 @@ function zohoOrder(rows) {
     deliveryMethod: delivery.value,
     deliveryMethodId: delivery.dataset.optionId,
     other: other ? other.value.trim() : "",
+    customerNotes: notes ? notes.value.trim() : "",
     lines: rows.flatMap((row, index) => {
       if (isBlank(row)) return [];
       const item = entries[index].querySelector("[data-zoho-item]");
@@ -1310,9 +1499,11 @@ async function onSubmit(event) {
   }
   try {
     const response = await fetch("/api/submit", { method: "POST", body: formData });
-    showResult(await readJson(response));
-    setPhase("review");
-    pristine = JSON.stringify(readAll());
+    const data = await readJson(response);
+    forgetFile();
+    showError("");
+    setPhase("idle");
+    showResult(data);
   } catch (error) {
     showError(error.message);
     setPhase("review");
@@ -1333,6 +1524,11 @@ function showResult(data) {
       title.textContent = "Nothing was added to the spreadsheet.";
     }
     result.append(title);
+    if (sheet.message) {
+      const note = document.createElement("p");
+      note.textContent = sheet.message;
+      result.append(note);
+    }
     if (sheet.written > 0) {
       const link = document.createElement("a");
       link.href = sheet.url || sheetLink.href;
@@ -1363,9 +1559,10 @@ function showResult(data) {
       result.append(link);
     }
   }
+  const sheetFailed = Boolean(sheet && sheet.message);
   const saved = Boolean((sheet && sheet.written > 0) || (zoho && zoho.created && zoho.attachment !== false));
-  result.classList.toggle("is-ok", saved);
-  result.classList.toggle("is-warn", !saved);
+  result.classList.toggle("is-ok", saved && !sheetFailed);
+  result.classList.toggle("is-warn", !saved || sheetFailed);
   result.hidden = false;
 }
 
@@ -1395,9 +1592,18 @@ function showError(message) {
   status.textContent = message || "";
 }
 
+function logUsage(data) {
+  const calls = data && data.usage;
+  if (!Array.isArray(calls)) return;
+  calls.forEach((call) => {
+    if (call && call.line) console.log(call.line);
+  });
+}
+
 async function readJson(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Something went wrong.");
+  logUsage(data);
   return data;
 }
 

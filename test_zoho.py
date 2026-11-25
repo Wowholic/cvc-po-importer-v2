@@ -42,18 +42,27 @@ class CustomerMatchTest(unittest.TestCase):
         match = best_match("Acme Valve Company", customers)
         self.assertEqual(match["id"], "1")
 
-    def test_a_weak_or_tied_name_is_not_chosen(self):
+    def test_a_single_partial_name_is_proposed_and_a_tie_is_not(self):
         customers = [
             {"id": "1", "name": "Acme Valve", "company": "", "status": "active"},
             {"id": "2", "name": "Other Works", "company": "", "status": "active"},
         ]
-        self.assertIsNone(best_match("Acme", customers))
+        self.assertEqual(best_match("Acme", customers)["id"], "1")
         self.assertIsNone(best_match("North Pump", customers))
         tied = [
             {"id": "1", "name": "Acme Valve North Works", "company": "", "status": "active"},
             {"id": "2", "name": "Acme Valve North Supply", "company": "", "status": "active"},
         ]
         self.assertIsNone(best_match("Acme Valve North", tied))
+
+    def test_a_one_letter_typo_still_matches_the_company(self):
+        customers = [
+            {"id": "1", "name": "APPLIED IND. CANADA", "company": "APPLIED INDUSTRIAL TECHONOLOGIES, LP", "status": "active"},
+            {"id": "2", "name": "APPLIED INDUSTRIAL TECHONOLOGIES", "company": "APPLIED INDUSTRIAL TECHONOLOGIES", "status": "active"},
+            {"id": "3", "name": "Other Works", "company": "", "status": "active"},
+        ]
+        match = best_match("Applied Industrial Technologies", customers)
+        self.assertEqual(match["id"], "2")
 
     def test_duplicate_records_of_the_same_customer_still_match(self):
         customers = [
@@ -62,6 +71,23 @@ class CustomerMatchTest(unittest.TestCase):
         ]
         match = best_match("Sunbelt Supply Co.", customers)
         self.assertEqual(match["name"], "SUNBELT SUPPLY")
+
+    def test_extra_words_around_the_name_still_match(self):
+        customers = [
+            {"id": "1", "name": "SUNBELT SUPPLY", "company": "SUNBELT SUPPLY", "status": "active"},
+            {"id": "2", "name": "Supply", "company": "Supply", "status": "active"},
+            {"id": "3", "name": "Other Works", "company": "", "status": "active"},
+        ]
+        match = best_match("Sunbelt Supply 100 Main Street Houston", customers)
+        self.assertEqual(match["id"], "1")
+
+    def test_people_at_the_same_company_still_match(self):
+        customers = [
+            {"id": "1", "name": "John Smith", "company": "SUNBELT SUPPLY", "status": "active"},
+            {"id": "2", "name": "Jane Doe", "company": "SUNBELT SUPPLY", "status": "active"},
+        ]
+        match = best_match("Sunbelt Supply", customers)
+        self.assertEqual(match["company"], "SUNBELT SUPPLY")
 
 
 class ItemMatchTest(unittest.TestCase):

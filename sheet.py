@@ -42,6 +42,42 @@ def tab_range(cells: str) -> str:
     return f"'{title}'!{cells}"
 
 
+SALES_AMOUNT_COLUMN = 10
+SHEET_WIDTH = 27
+
+
+def _cell(row, index) -> str:
+    if index >= len(row) or row[index] is None:
+        return ""
+    return str(row[index]).strip()
+
+
+def row_is_open(row) -> bool:
+    """A row can be reused when it is empty, or when column K is only the $0.00 formula."""
+    for index in range(SHEET_WIDTH):
+        value = _cell(row, index)
+        if index == SALES_AMOUNT_COLUMN:
+            if value not in ("", "$0.00"):
+                return False
+        elif value:
+            return False
+    return True
+
+
+def first_writable_row(existing, count: int) -> int:
+    needed = max(count, 1)
+    start = 1
+    limit = len(existing) + needed
+    while start <= limit:
+        if all(
+            row_is_open(existing[start + offset] if start + offset < len(existing) else [])
+            for offset in range(needed)
+        ):
+            return start + 1
+        start += 1
+    return len(existing) + 1
+
+
 def existing_po_numbers(sheets) -> set[str]:
     result = sheets.spreadsheets().values().get(spreadsheetId=SHEET_ID, range=tab_range("B:B")).execute()
     numbers = set()
@@ -85,7 +121,8 @@ def plain_format(sheets, start: int, end: int) -> None:
                     "cell": {
                         "userEnteredFormat": {
                             "backgroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "horizontalAlignment": "LEFT",
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE",
                             "wrapStrategy": "OVERFLOW_CELL",
                             "textFormat": {
                                 "foregroundColor": {"red": 0, "green": 0, "blue": 0},
@@ -107,10 +144,30 @@ def plain_format(sheets, start: int, end: int) -> None:
                     "fields": ",".join([
                         "userEnteredFormat.backgroundColor",
                         "userEnteredFormat.horizontalAlignment",
+                        "userEnteredFormat.verticalAlignment",
                         "userEnteredFormat.wrapStrategy",
                         "userEnteredFormat.textFormat",
                         "userEnteredFormat.borders",
                     ]),
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": cell_range(11, 18),
+                    "cell": {
+                        "userEnteredFormat": {
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE",
+                        }
+                    },
+                    "fields": "userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment",
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": cell_range(4, 5),
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "m/d/yyyy"}}},
+                    "fields": "userEnteredFormat.numberFormat",
                 }
             },
             {
@@ -131,7 +188,7 @@ def plain_format(sheets, start: int, end: int) -> None:
     ).execute()
 
 
-def append_purchase_orders(raw_rows) -> dict:
+def append_purchase_orders(raw_rows, sales_order_number: str = "") -> dict:
     rows = validate_rows(raw_rows)
     try:
         sheets = build("sheets", "v4", credentials=credentials(), cache_discovery=False)
@@ -140,14 +197,15 @@ def append_purchase_orders(raw_rows) -> dict:
         if fresh:
             existing = sheets.spreadsheets().values().get(
                 spreadsheetId=SHEET_ID,
-                range=tab_range("A:K"),
+                range=tab_range("A:AA"),
+                valueRenderOption="FORMATTED_VALUE",
             ).execute()
-            start = len(existing.get("values") or []) + 1
-            values = build_sheet_values(fresh, start)
+            start = first_writable_row(existing.get("values") or [], len(fresh))
+            values = build_sheet_values(fresh, start, sales_order_number)
             end = start + len(values) - 1
             sheets.spreadsheets().values().update(
                 spreadsheetId=SHEET_ID,
-                range=tab_range(f"A{start}:K{end}"),
+                range=tab_range(f"A{start}:R{end}"),
                 valueInputOption="USER_ENTERED",
                 body={"values": values},
             ).execute()
