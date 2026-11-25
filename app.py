@@ -21,7 +21,7 @@ from auth import (
     record_failure,
     verify_session,
 )
-from config import MAX_PDF_BYTES, SHEET_URL
+from config import MAX_PDF_BYTES
 from extract_po import ExtractError, extract_bytes, gemini_usage, reset_gemini_usage
 from rows import RowError, validate_rows
 from figures import figure_choices
@@ -135,7 +135,7 @@ def logout():
 
 @app.get("/")
 def index():
-    return render_template("index.html", sheet_url=SHEET_URL)
+    return render_template("index.html")
 
 
 @app.post("/api/extract")

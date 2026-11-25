@@ -151,11 +151,12 @@ class AppTest(unittest.TestCase):
     def setUp(self):
         self.client = signed_in_client()
 
-    def test_home_links_to_the_shared_spreadsheet(self):
+    def test_home_is_order_entry(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"1col-aNAhDKJyqTg6Bai3MSIwPPS_-ELby_F-FKxCi2s", response.data)
-        self.assertIn(b"Review the lines", response.data)
+        self.assertIn(b"<title>CVC - Order Entry</title>", response.data)
+        self.assertIn(b"Order Entry", response.data)
+        self.assertNotIn(b"docs.google.com", response.data)
 
     def test_rejects_a_file_that_is_not_a_pdf(self):
         response = self.client.post(

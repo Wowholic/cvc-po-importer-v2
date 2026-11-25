@@ -45,10 +45,12 @@ const submitButton = document.getElementById("submit");
 const submitSpin = document.getElementById("submit-spin");
 const submitLabel = document.getElementById("submit-label");
 const result = document.getElementById("result");
-const sheetLink = document.getElementById("sheet-link");
+const syncWhen = document.getElementById("sync-when");
 
 let file = null;
 let objectUrl = null;
+let pdfShown = null;
+const shell = document.querySelector(".shell");
 let phase = "idle";
 let pristine = "";
 let customerLoad = Promise.resolve();
@@ -86,6 +88,7 @@ refreshLists.addEventListener("click", async () => {
     customers = catalog.customers || [];
     zohoItems = catalog.items || [];
     figureCatalog = catalog.figures || [];
+    showSyncTime(catalog.saved);
     showError("");
   } catch (error) {
     showError(error.message);
@@ -188,7 +191,8 @@ function useFile(next) {
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   file = next;
   objectUrl = URL.createObjectURL(next);
-  pdf.src = objectUrl;
+  pdfShown = null;
+  pdf.removeAttribute("src");
   pdf.title = name;
   filename.textContent = name;
   filesize.textContent = formatSize(next.size);
@@ -204,6 +208,7 @@ function forgetFile() {
   objectUrl = null;
   file = null;
   fileInput.value = "";
+  pdfShown = null;
   pdf.removeAttribute("src");
   pdf.title = "Purchase order PDF";
   lines.replaceChildren();
@@ -267,7 +272,27 @@ async function loadCatalog() {
   customers = catalog.customers || [];
   zohoItems = catalog.items || [];
   figureCatalog = catalog.figures || [];
+  showSyncTime(catalog.saved);
   return catalog;
+}
+
+function showSyncTime(saved) {
+  const stamp = Number(saved);
+  const date = new Date(stamp * 1000);
+  if (!stamp || Number.isNaN(date.getTime())) {
+    syncWhen.textContent = "";
+    return;
+  }
+  const formatted = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+    timeZoneName: "short",
+  }).format(date);
+  syncWhen.textContent = `Last sync ${formatted}`;
 }
 
 async function resolveRows(rows) {
@@ -1531,7 +1556,7 @@ function showResult(data) {
     }
     if (sheet.written > 0) {
       const link = document.createElement("a");
-      link.href = sheet.url || sheetLink.href;
+      link.href = sheet.url;
       link.target = "_blank";
       link.rel = "noopener";
       link.textContent = "Open the spreadsheet";
@@ -1576,10 +1601,35 @@ function setPhase(next) {
   readRowBox.hidden = !file || next === "reading" || reviewing;
   reader.hidden = next !== "reading";
   review.hidden = !reviewing;
+  if (reviewing) showPdfWhenWide();
   readButton.disabled = next === "reading";
   submitLabel.textContent = next === "sending" ? "Submitting" : "Submit";
   submitSpin.hidden = next !== "sending";
   syncSubmit();
+}
+
+// The browser's PDF viewer picks its zoom once, from the frame's size when the
+// document loads. Loading it before the page has widened leaves the pages small,
+// so the PDF goes into the frame only after the shell's width transition ends.
+function showPdfWhenWide() {
+  const url = objectUrl;
+  if (!url || pdfShown === url) return;
+  let done = false;
+  const load = () => {
+    if (done) return;
+    done = true;
+    shell.removeEventListener("transitionend", onEnd);
+    clearTimeout(fallback);
+    if (objectUrl !== url || review.hidden) return;
+    pdfShown = url;
+    pdf.src = `${url}#view=FitH`;
+  };
+  const onEnd = (event) => {
+    if (event.target === shell && event.propertyName === "width") load();
+  };
+  shell.addEventListener("transitionend", onEnd);
+  // No transition fires when the shell is already wide or motion is reduced.
+  const fallback = setTimeout(load, 600);
 }
 
 function syncSubmit() {

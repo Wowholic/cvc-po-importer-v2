@@ -1,6 +1,6 @@
-# Purchase desk
+# Order Entry
 
-Purchase desk turns a customer purchase-order PDF into a reviewed order. Drop in the PDF, check the customer, dates, and lines, then send it on.
+Order Entry turns a customer purchase-order PDF into a reviewed order. Drop in the PDF, check the customer, dates, and lines, then send it on.
 
 It can append the lines to the **PO/SO/INV TRACKING 2026** tab and save a draft sales order in Zoho Books, with the PDF attached. That tab and the inventory figures live in the same spreadsheet. The Zoho order stays a draft. The app does not email the customer, open the order, or create customers or items.
 
