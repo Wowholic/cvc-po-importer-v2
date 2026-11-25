@@ -8,7 +8,7 @@ import time
 
 import requests
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, INVENTORY_SHEET_ID, INVENTORY_TAB
+from config import GEMINI_API_KEY, GEMINI_MODEL, INVENTORY_TAB, SHEET_ID
 from extract_po import ExtractError, log_gemini_usage
 from sheet import SheetError, credentials
 
@@ -79,7 +79,7 @@ def _read_figures() -> tuple[list[str], dict[str, str]]:
     try:
         sheets = build("sheets", "v4", credentials=credentials(), cache_discovery=False)
         result = sheets.spreadsheets().values().get(
-            spreadsheetId=INVENTORY_SHEET_ID,
+            spreadsheetId=SHEET_ID,
             range=f"'{title}'!B:C",
         ).execute()
     except SheetError as error:

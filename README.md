@@ -121,7 +121,7 @@ cp .env.example .env      # then fill in the values below
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Google service account JSON, on one line. |
 | `GOOGLE_IMPERSONATE` | The Google user the service account acts as. That user needs edit access to the spreadsheet. |
 | `SHEET_ID` / `SHEET_TAB` | Spreadsheet and tab to write to. Defaults: the Sales Order Tracker, `PO/SO/INV TRACKING 2026`. |
-| `INVENTORY_SHEET_ID` / `INVENTORY_TAB` | Where the inventory is read. Defaults: the same spreadsheet, `INVENTORY`. |
+| `INVENTORY_TAB` | The inventory tab, always in the same spreadsheet as `SHEET_ID`. Default `INVENTORY`. |
 | `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | Zoho API access. Token scopes: `ZohoBooks.contacts.READ`, `ZohoBooks.settings.READ`, `ZohoBooks.salesorders.CREATE`. |
 | `ZOHO_ORGANIZATION_ID` | Zoho Books organization id. |
 | `ZOHO_ACCOUNTS_DOMAIN` / `ZOHO_API_DOMAIN` | Default `accounts.zoho.com` / `www.zohoapis.com`. Use the `.eu` versions for an EU account. |

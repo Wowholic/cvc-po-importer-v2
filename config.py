@@ -15,10 +15,7 @@ GOOGLE_IMPERSONATE = os.environ.get("GOOGLE_IMPERSONATE", "thenning@lunkenheimer
 SHEET_ID = os.environ.get("SHEET_ID", "1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE").strip()
 SHEET_TAB = os.environ.get("SHEET_TAB", "PO/SO/INV TRACKING 2026").strip() or "PO/SO/INV TRACKING 2026"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
-INVENTORY_SHEET_ID = os.environ.get(
-    "INVENTORY_SHEET_ID",
-    "1clSeKesFcx5F8ceOVZEX6EoUNoe3EzKXBWbDGpFxhVE",
-).strip()
+# The INVENTORY tab is always read from the same spreadsheet as SHEET_ID.
 INVENTORY_TAB = os.environ.get("INVENTORY_TAB", "INVENTORY").strip() or "INVENTORY"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
