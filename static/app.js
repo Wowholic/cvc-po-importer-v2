@@ -1540,55 +1540,49 @@ function showResult(data) {
   const sheet = data.spreadsheet;
   const zoho = data.zoho;
   if (sheet) {
-    const title = document.createElement("strong");
-    if (sheet.written > 0) {
-      title.textContent = sheet.written === 1
-        ? "1 line added to the spreadsheet."
-        : `${sheet.written} lines added to the spreadsheet.`;
-    } else {
-      title.textContent = "Nothing was added to the spreadsheet.";
-    }
-    result.append(title);
-    if (sheet.message) {
-      const note = document.createElement("p");
-      note.textContent = sheet.message;
-      result.append(note);
-    }
-    if (sheet.written > 0) {
-      const link = document.createElement("a");
-      link.href = sheet.url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = "Open the spreadsheet";
-      result.append(link);
-    }
+    const written = sheet.written || 0;
+    const title = written > 0
+      ? `${written} ${written === 1 ? "line" : "lines"} added to the spreadsheet.`
+      : "Nothing was added to the spreadsheet.";
+    const notes = sheet.message ? [sheet.message] : [];
     const seen = new Set();
     for (const item of sheet.skipped || []) {
       if (seen.has(item.po)) continue;
       seen.add(item.po);
-      const note = document.createElement("p");
-      note.textContent = `PO ${item.po} is already on the spreadsheet, so those lines were left out.`;
-      result.append(note);
+      notes.push(`PO ${item.po} is already on the spreadsheet, so those lines were left out.`);
     }
+    result.append(resultPart(title, notes, written > 0 ? sheet.url : "", "Open the spreadsheet"));
   }
   if (zoho && zoho.message) {
-    const note = document.createElement("p");
-    note.textContent = zoho.message;
-    result.append(note);
-    if (zoho.url) {
-      const link = document.createElement("a");
-      link.href = zoho.url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = "Open the sales order";
-      result.append(link);
-    }
+    result.append(resultPart(zoho.message, [], zoho.url, "Open the sales order"));
   }
   const sheetFailed = Boolean(sheet && sheet.message);
   const saved = Boolean((sheet && sheet.written > 0) || (zoho && zoho.created && zoho.attachment !== false));
   result.classList.toggle("is-ok", saved && !sheetFailed);
   result.classList.toggle("is-warn", !saved || sheetFailed);
   result.hidden = false;
+}
+
+function resultPart(title, notes, url, linkText) {
+  const part = document.createElement("div");
+  part.className = "result-part";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  part.append(heading);
+  for (const text of notes) {
+    const note = document.createElement("p");
+    note.textContent = text;
+    part.append(note);
+  }
+  if (url) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = linkText;
+    part.append(link);
+  }
+  return part;
 }
 
 function setPhase(next) {
