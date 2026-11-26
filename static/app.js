@@ -54,6 +54,8 @@ const shell = document.querySelector(".shell");
 let phase = "idle";
 let pristine = "";
 let customerLoad = Promise.resolve();
+let addressLoad = Promise.resolve();
+let addressFor = null;
 let customers = [];
 let figureLoad = Promise.resolve({ figures: [], matches: {} });
 let figureCatalog = [];
@@ -66,7 +68,7 @@ let optionLoad = Promise.resolve({
   deliveryMethods: [],
   matches: {},
 });
-const HELD_FIELDS = ["Payment Terms", "Delivery Method", "Other", "Customer Notes", "Description"];
+const HELD_FIELDS = ["Payment Terms", "Delivery Method", "Other", "Customer Notes", "Description", "Shipping Address"];
 let catalog = null;
 let resolution = null;
 
@@ -244,6 +246,7 @@ async function readPdf() {
       ? "Nothing was found in the PDF. Fill in the order and the line below, or add more."
       : "";
     await Promise.all([customerLoad, figureLoad, itemLoad, optionLoad, matchLoad]);
+    await addressLoad;
     setPhase("review");
     pristine = JSON.stringify(readAll());
     const first = order.querySelector(".picker-value, textarea");
@@ -444,7 +447,11 @@ function renderOrder(rows) {
   const deliveryMethod = firstFilled(rows, "Delivery Method");
   optionLoad = requestOrderOptions(paymentTerms, deliveryMethod);
   HEADER_FIELDS.forEach((field) => {
-    fields.append(field === "Company" ? companyControl(shared.Company) : fieldControl(field, shared));
+    if (field === "Company") {
+      fields.append(companyControl(shared.Company), addressControl(firstFilled(rows, "Ship To")));
+    } else {
+      fields.append(fieldControl(field, shared));
+    }
   });
   fields.append(zohoOptionControl(paymentTerms, {
     field: "Payment Terms",
@@ -986,6 +993,9 @@ function customerNotesField() {
   wrap.className = "field";
   const label = document.createElement("span");
   label.textContent = "Customer Notes";
+  const note = document.createElement("small");
+  note.className = "field-note";
+  note.textContent = "(not read from the PDF, add your own notes here)";
   const input = document.createElement("textarea");
   input.dataset.field = "Customer Notes";
   input.value = "";
@@ -993,7 +1003,177 @@ function customerNotesField() {
   input.placeholder = "Empty";
   input.autocomplete = "off";
   input.spellcheck = true;
-  wrap.append(label, input);
+  wrap.append(label, note, input);
+  return wrap;
+}
+
+function shippingAddressId() {
+  const input = order.querySelector('[data-field="Shipping Address"]');
+  return input ? input.dataset.addressId || "" : "";
+}
+
+function addressControl(shipTo) {
+  const wrap = document.createElement("div");
+  wrap.className = "field";
+  const label = document.createElement("span");
+  label.textContent = "Shipping Address";
+  const note = document.createElement("small");
+  note.className = "field-note";
+  note.hidden = true;
+  const value = document.createElement("input");
+  value.type = "hidden";
+  value.dataset.field = "Shipping Address";
+  value.value = "";
+
+  const picker = document.createElement("div");
+  picker.className = "picker";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "picker-value is-empty";
+  toggle.setAttribute("aria-haspopup", "listbox");
+  toggle.setAttribute("aria-expanded", "false");
+  const toggleText = document.createElement("span");
+  toggle.append(toggleText, chevron());
+  const menu = document.createElement("div");
+  menu.className = "picker-menu";
+  menu.hidden = true;
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "picker-search";
+  search.placeholder = "Search addresses";
+  search.autocomplete = "off";
+  search.spellcheck = false;
+  search.setAttribute("aria-label", "Search addresses");
+  const list = document.createElement("div");
+  list.className = "picker-list";
+  list.setAttribute("role", "listbox");
+  menu.append(search, list);
+  picker.append(toggle, menu);
+  wrap.append(label, note, value, picker);
+
+  let options = [];
+  let request = 0;
+
+  const showNote = (text) => {
+    note.textContent = text;
+    note.hidden = !text;
+  };
+  const pdfNote = (sure) => {
+    if (!shipTo) return "";
+    return sure ? `From the PDF: ${shipTo}` : `From the PDF: ${shipTo}. Check the address.`;
+  };
+  const setChosen = (option) => {
+    value.value = option ? option.text : "";
+    value.dataset.addressId = option ? option.id : "";
+    toggleText.textContent = option ? option.text : (options.length ? "Choose an address" : toggleText.textContent);
+    toggle.classList.toggle("is-empty", !option);
+  };
+  const setWaiting = (text) => {
+    options = [];
+    value.value = "";
+    value.dataset.addressId = "";
+    toggleText.textContent = text;
+    toggle.classList.add("is-empty");
+    toggle.disabled = true;
+  };
+
+  const renderChoices = (query) => {
+    list.replaceChildren();
+    const needle = query.trim().toLowerCase();
+    const rows = options.filter((option) => !needle
+      || option.text.toLowerCase().includes(needle)
+      || (option.tag || "").toLowerCase().includes(needle));
+    rows.slice(0, 40).forEach((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      const current = value.dataset.addressId === option.id;
+      button.className = current ? "is-current" : "";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", current ? "true" : "false");
+      const title = document.createElement("strong");
+      title.textContent = option.text;
+      button.append(title);
+      if (option.tag) {
+        const extra = document.createElement("small");
+        extra.textContent = option.tag;
+        button.append(extra);
+      }
+      button.addEventListener("click", () => {
+        setChosen(option);
+        showNote(shipTo ? `From the PDF: ${shipTo}` : "");
+        closePicker(picker);
+        result.hidden = true;
+      });
+      list.append(button);
+    });
+    if (!list.children.length) {
+      const empty = document.createElement("p");
+      empty.className = "picker-empty";
+      empty.textContent = needle ? "No address with those words." : "No addresses loaded.";
+      list.append(empty);
+    }
+  };
+
+  const load = async (contactId) => {
+    request += 1;
+    const mine = request;
+    showNote(pdfNote(true));
+    if (!contactId) {
+      setWaiting("Choose a customer first");
+      return;
+    }
+    setWaiting("Checking addresses");
+    try {
+      const response = await fetch("/api/addresses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId: contactId, shipTo }),
+      });
+      const data = await readJson(response);
+      if (mine !== request || !wrap.isConnected) return;
+      options = Array.isArray(data.addresses) ? data.addresses : [];
+      if (!options.length) {
+        setWaiting("No address in Zoho Books");
+        showNote(shipTo ? `From the PDF: ${shipTo}. This customer has no address in Zoho Books.` : "");
+        return;
+      }
+      toggle.disabled = false;
+      setChosen(options.find((option) => option.id === data.match) || null);
+      showNote(pdfNote(Boolean(data.sure)));
+    } catch (error) {
+      if (mine !== request || !wrap.isConnected) return;
+      setWaiting("Addresses could not be loaded");
+      showNote(`${error.message} Zoho will use the customer's default shipping address.`);
+    }
+  };
+
+  toggle.addEventListener("click", () => {
+    if (picker.classList.contains("is-open")) {
+      closePicker(picker);
+      return;
+    }
+    closeOtherPickers(picker);
+    picker.classList.add("is-open");
+    menu.hidden = false;
+    toggle.setAttribute("aria-expanded", "true");
+    search.value = "";
+    renderChoices("");
+    search.focus();
+  });
+  search.addEventListener("input", () => renderChoices(search.value));
+  search.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePicker(picker);
+      toggle.focus();
+    }
+  });
+
+  setWaiting("Choose a customer first");
+  showNote(pdfNote(true));
+  addressFor = (contactId) => {
+    addressLoad = load(contactId);
+  };
   return wrap;
 }
 
@@ -1038,8 +1218,10 @@ function companyControl(extracted) {
   wrap.append(label, note, value, picker);
 
   const setChosen = (name, id) => {
+    const changed = (value.dataset.contactId || "") !== (id || "");
     value.value = name || "";
     value.dataset.contactId = id || "";
+    if (changed && addressFor) addressFor(id || "");
     toggleText.textContent = name || "Choose a customer";
     toggle.classList.toggle("is-empty", !name);
     toggle.classList.remove("is-invalid");
@@ -1465,6 +1647,7 @@ function zohoOrder(rows) {
   const header = rows.find((row) => !isBlank(row)) || rows[0] || {};
   return {
     customerId: order.querySelector('[data-field="Company"]').dataset.contactId,
+    shippingAddressId: shippingAddressId(),
     reference: header["CUSTOMER PO #"] || "",
     date: header["PO DATE"] || "",
     paymentTermsLabel: terms.value,
@@ -1522,20 +1705,21 @@ async function onSubmit(event) {
     formData.append("order", JSON.stringify(zohoOrder(rows)));
     formData.append("pdf", file, file.name || "purchase-order.pdf");
   }
+  const sentFile = file;
   try {
     const response = await fetch("/api/submit", { method: "POST", body: formData });
     const data = await readJson(response);
     forgetFile();
     showError("");
     setPhase("idle");
-    showResult(data);
+    showResult(data, sentFile);
   } catch (error) {
     showError(error.message);
     setPhase("review");
   }
 }
 
-function showResult(data) {
+function showResult(data, poFile) {
   result.replaceChildren();
   const sheet = data.spreadsheet;
   const zoho = data.zoho;
@@ -1556,11 +1740,89 @@ function showResult(data) {
   if (zoho && zoho.message) {
     result.append(resultPart(zoho.message, [], zoho.url, "Open the sales order"));
   }
+  const actions = printActions(zoho && zoho.created ? zoho.id : "", poFile);
+  if (actions) result.append(actions);
   const sheetFailed = Boolean(sheet && sheet.message);
   const saved = Boolean((sheet && sheet.written > 0) || (zoho && zoho.created && zoho.attachment !== false));
   result.classList.toggle("is-ok", saved && !sheetFailed);
   result.classList.toggle("is-warn", !saved || sheetFailed);
   result.hidden = false;
+}
+
+function printActions(salesOrderId, poFile) {
+  if (!salesOrderId && !poFile) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "result-actions";
+  const buttons = document.createElement("div");
+  buttons.className = "result-buttons";
+  const problem = document.createElement("p");
+  problem.className = "result-problem";
+  problem.hidden = true;
+  if (salesOrderId) {
+    let soPdf = null;
+    buttons.append(printButton("Print Zoho SO", problem, async () => {
+      if (!soPdf) {
+        const response = await fetch(`/api/salesorders/${encodeURIComponent(salesOrderId)}/pdf`);
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "Zoho Books could not send the sales order PDF.");
+        }
+        soPdf = await response.blob();
+      }
+      return soPdf;
+    }));
+  }
+  if (poFile) {
+    buttons.append(printButton("Print client PO", problem, async () => poFile));
+  }
+  wrap.append(buttons, problem);
+  return wrap;
+}
+
+function printButton(text, problem, getPdf) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary";
+  button.textContent = text;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    problem.hidden = true;
+    try {
+      printPdf(await getPdf());
+    } catch (error) {
+      problem.textContent = error.message;
+      problem.hidden = false;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
+let printFrame = null;
+
+function printPdf(blob) {
+  if (printFrame) {
+    URL.revokeObjectURL(printFrame.src);
+    printFrame.remove();
+  }
+  const url = URL.createObjectURL(blob);
+  const frame = document.createElement("iframe");
+  frame.className = "print-frame";
+  frame.title = "Print";
+  frame.addEventListener("load", () => {
+    setTimeout(() => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      } catch {
+        window.open(url, "_blank", "noopener");
+      }
+    }, 250);
+  });
+  frame.src = url;
+  document.body.append(frame);
+  printFrame = frame;
 }
 
 function resultPart(title, notes, url, linkText) {
@@ -1616,7 +1878,7 @@ function showPdfWhenWide() {
     clearTimeout(fallback);
     if (objectUrl !== url || review.hidden) return;
     pdfShown = url;
-    pdf.src = `${url}#view=FitH`;
+    pdf.src = `${url}#view=FitH&navpanes=0`;
   };
   const onEnd = (event) => {
     if (event.target === shell && event.propertyName === "width") load();

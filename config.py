@@ -29,3 +29,6 @@ ZOHO_REFRESH_TOKEN = os.environ.get("ZOHO_REFRESH_TOKEN", "").strip()
 ZOHO_ORGANIZATION_ID = os.environ.get("ZOHO_ORGANIZATION_ID", "").strip()
 ZOHO_ACCOUNTS_DOMAIN = os.environ.get("ZOHO_ACCOUNTS_DOMAIN", "accounts.zoho.com").strip() or "accounts.zoho.com"
 ZOHO_API_DOMAIN = os.environ.get("ZOHO_API_DOMAIN", "www.zohoapis.com").strip() or "www.zohoapis.com"
+
+# Extraction and matching need little reasoning; "low" keeps Gemini from overthinking a messy PDF.
+GEMINI_THINKING = {"thinkingLevel": "low"}

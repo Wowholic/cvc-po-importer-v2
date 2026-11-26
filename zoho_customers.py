@@ -15,6 +15,7 @@ import requests
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
+    GEMINI_THINKING,
     ZOHO_ACCOUNTS_DOMAIN,
     ZOHO_API_DOMAIN,
     ZOHO_CLIENT_ID,
@@ -330,7 +331,7 @@ Leave "id" empty only when no item shares any of that figure code. Do not invent
         headers={"x-goog-api-key": GEMINI_API_KEY},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": GEMINI_THINKING},
         },
         timeout=120,
     )
@@ -389,7 +390,7 @@ Leave the id empty only when no option is that payment term or delivery method. 
         headers={"x-goog-api-key": GEMINI_API_KEY},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": GEMINI_THINKING},
         },
         timeout=60,
     )

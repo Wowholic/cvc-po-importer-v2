@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 
+from addresses import clear_addresses
 from figures import clear_figures, figure_sizes, list_figures
 from zoho_customers import (
     clear_cached_lists,
@@ -73,6 +74,7 @@ def load_catalog(refresh: bool = False) -> dict:
 
 def _fetch() -> dict:
     clear_cached_lists()
+    clear_addresses()
     clear_figures()
     books = configured()
     customers = list_customers() if books else []

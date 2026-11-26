@@ -6,12 +6,16 @@ from fractions import Fraction
 
 import requests
 
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_THINKING
 from extract_po import ExtractError, log_gemini_usage
 from zoho_customers import _name_score, _words, best_match, rank_customers
 
 ABBREVIATIONS = {
     "BRZ": "BRONZE",
+    "BZ": "BRONZE",
+    "STL": "STEEL",
+    "FRG": "FORGED",
+    "FORG": "FORGED",
     "BRS": "BRASS",
     "SS": "STAINLESS",
     "CI": "IRON",
@@ -23,6 +27,8 @@ ABBREVIATIONS = {
     "EPDM": "EPDM",
 }
 SKIP_WORDS = {"THE", "AND", "FOR", "WITH", "VALVE", "VLV"}
+# Words on almost every line or item ("NON LUNK DESIGN - ..."), so they say nothing about the material.
+BRAND_WORDS = {"LUNK", "LUNKENHEIMER", "NON", "DESIGN"}
 UNICODE_FRACTIONS = {"½": "1/2", "¼": "1/4", "¾": "3/4", "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8"}
 SIZE_NUMBER = r"\d+(?:\s*-\s*|\s+)\d+/\d+|\d+/\d+|\d*\.\d+|\d+"
 
@@ -143,21 +149,27 @@ def resolve_order(rows, catalog, ask=None) -> dict:
 
 
 def match_item(figure: str, description: str, items: list[dict], sizes: dict | None = None):
-    chosen, options = _match_item_codes(figure, description, items, sizes)
-    if chosen is None:
-        sized = _item_for_figure(family_figure(figure, description, sizes), items)
-        if sized:
-            return sized, []
-    return chosen, options
+    # Family + size from the inventory tab (1837 + 1/2 -> 1837005) is the most precise
+    # answer, so it wins over a looser part-number hit such as 1837-40-005.
+    family = _items_for_figure(family_figure(figure, description, sizes), items)
+    if family:
+        chosen = settle_tie(family, description)
+        # Several Zoho items share this inventory figure and nothing tells them apart:
+        # offer only those, never a looser match.
+        return (chosen, []) if chosen else (None, family[:8])
+    return _match_item_codes(figure, description, items, sizes)
 
 
 def _match_item_codes(figure: str, description: str, items: list[dict], sizes: dict | None = None):
-    figure_codes = loose_codes(figure)
+    exact = _exact_item(figure, items)
+    if exact and not _other_material(figure, description, items, exact):
+        return exact, []
+    figure_codes = loose_codes(figure, digits=True)
     codes = figure_codes | loose_codes(description)
     hints = description_words(description)
     ranked = []
     for item in items:
-        found = _overlap(codes, loose_codes(f"{item.get('name', '')} {item.get('sku', '')}"))
+        found = _overlap(codes, loose_codes(f"{item.get('name', '')} {item.get('sku', '')}", digits=True))
         if not found:
             continue
         extra = min(pair[0] for pair in found)
@@ -184,7 +196,44 @@ def _match_item_codes(figure: str, description: str, items: list[dict], sizes: d
     sized = pick_by_size(close, figure, description, sizes)
     if sized:
         return sized, []
+    settled = pick_by_material(close, description)
+    if settled:
+        return settled, []
     return None, [row[3] for row in ranked[:8]]
+
+
+def _exact_item(figure: str, items: list[dict]):
+    """An item whose whole name or SKU is the FIG#, such as 1837 or T-811X."""
+    key = _code(figure)
+    if len(key) < 3:
+        return None
+    hits = [item for item in items if key in (_code(item.get("name")), _code(item.get("sku")))]
+    active = [item for item in hits if item.get("status") == "active"]
+    for group in (hits, active):
+        if len(group) == 1:
+            return group[0]
+    return None
+
+
+def _other_material(figure: str, description: str, items: list[dict], exact: dict) -> bool:
+    """True when the description names a material, such as BRZ, that another item
+    with the same part number carries before " - " (BRONZE - 1837005) and the exact item lacks."""
+    hints = description_words(description) - BRAND_WORDS
+    if not hints or _material_words(exact) & hints:
+        return False
+    codes = loose_codes(figure, digits=True)
+    for item in items:
+        if item is exact or not _material_words(item) & hints:
+            continue
+        if _overlap(codes, loose_codes(f"{item.get('name', '')} {item.get('sku', '')}", digits=True)):
+            return True
+    return False
+
+
+def _material_words(item: dict) -> set[str]:
+    name = str(item.get("name") or "")
+    prefix = name.split(" - ", 1)[0] if " - " in name else ""
+    return set(re.findall(r"[A-Z]{3,}", prefix.upper())) - BRAND_WORDS
 
 
 def _match_item_words(figure: str, description: str, items: list[dict], sizes: dict | None = None):
@@ -262,20 +311,40 @@ def _starts(text: str, part: str):
         start = text.find(part, start + 1)
 
 
-def _item_for_figure(key: str, items: list[dict]):
-    """The one Zoho item named after this inventory figure, such as BRONZE - 1837002."""
+def _items_for_figure(key: str, items: list[dict]) -> list[dict]:
+    """The Zoho items named after this inventory figure, such as 180020 and BRONZE - 180020."""
     if not key:
-        return None
+        return []
     found = []
     for item in items:
         name = item.get("name", "")
         tail = name.split(" - ", 1)[1] if " - " in name else ""
         if key in (_code(tail), _code(name), _code(item.get("sku", ""))):
             found.append(item)
-    active = [item for item in found if item.get("status") == "active"]
+    return found
+
+
+def settle_tie(candidates: list[dict], description: str):
+    """Pick one of several equally good items, or None.
+
+    One candidate wins. Otherwise a single active one wins, then a single one whose
+    material (the part before " - ", such as BRONZE) is named in the description (BRZ).
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    active = [item for item in candidates if item.get("status") == "active"] or candidates
     if len(active) == 1:
         return active[0]
-    return found[0] if len(found) == 1 else None
+    return pick_by_material(active, description)
+
+
+def pick_by_material(candidates: list[dict], description: str):
+    """The single candidate whose material (BRONZE in BRONZE - 180020) the description names (BRZ)."""
+    hints = description_words(description) - BRAND_WORDS
+    if not hints:
+        return None
+    named = [item for item in candidates if _material_words(item) & hints]
+    return named[0] if len(named) == 1 else None
 
 
 def _sheet_spelling(key: str, figures: list[str]) -> str:
@@ -291,10 +360,12 @@ def pdf_sizes(figure: str, description: str) -> set:
     because bare digits there are usually part of the part number.
     """
     found = set()
-    first = pdf_size(description)
+    first = pdf_size(_without_figure(figure, description))
     if first is not None:
         found.add(first)
-    text = _plain_size_text(figure)
+    # A part code in the description, such as MSP_18374X1/4", carries its size like the FIG# does.
+    codes = [token for token in str(description or "").split() if re.search(r"[A-Za-z]", token) and re.search(r"\d/\d", token)]
+    text = _plain_size_text(" ".join([figure, *codes]))
     for match in re.finditer(r"(?<![\d/.])(\d+-\d+/\d+|\d+/\d+)(?![\d/])", text):
         value = size_value(match.group(1))
         if value is not None:
@@ -304,6 +375,16 @@ def pdf_sizes(figure: str, description: str) -> set:
         if value is not None:
             found.add(value)
     return found
+
+
+def _without_figure(figure: str, description: str) -> str:
+    """Drop the FIG# from the description, so "1837 - 1/2 BRZ" reads as 1/2 and not 1837 1/2."""
+    figure = _text(figure)
+    text = _text(description)
+    if not figure:
+        return text
+    text = re.sub(rf"(?<![A-Z0-9]){re.escape(figure)}(?![A-Z0-9])", " ", text, flags=re.IGNORECASE)
+    return text.strip().lstrip("-:,;").strip()
 
 
 def item_size(item: dict, sizes: dict) -> str:
@@ -367,12 +448,13 @@ def match_figure(figure: str, figures: list[str]):
     return None, hits[:12]
 
 
-def loose_codes(value: str) -> set[str]:
+def loose_codes(value: str, digits: bool = False) -> set[str]:
+    """Part-number-like codes. With digits=True, all-digit codes such as 1837 count too."""
     cleaned = re.sub(r"[#/.,_-]+", " ", str(value or "").upper())
     tokens = re.findall(r"[A-Z0-9]+", cleaned)
     found = set()
     for token in tokens:
-        if _useful(token):
+        if _useful(token) or (digits and len(token) >= 4 and token.isdigit()):
             found.add(token)
     for left, right in zip(tokens, tokens[1:]):
         if any(character.isdigit() for character in left) and right.isalpha() and len(right) <= 4:
@@ -414,7 +496,7 @@ The figure code is often only part of a longer name. A material in the descripti
         headers={"x-goog-api-key": GEMINI_API_KEY},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": GEMINI_THINKING},
         },
         timeout=120,
     )
@@ -492,14 +574,18 @@ def _named_choice(source: str, options: list[dict]):
 def _overlap(left: set[str], right: set[str]):
     found = []
     for pdf_code in left:
-        if not _useful(pdf_code):
+        if not _codeish(pdf_code):
             continue
         for item_code in right:
-            if not _useful(item_code):
+            if not _codeish(item_code):
                 continue
             if pdf_code in item_code or item_code in pdf_code:
                 found.append((abs(len(item_code) - len(pdf_code)), pdf_code, item_code))
     return found
+
+
+def _codeish(code: str) -> bool:
+    return len(code) >= 4 and any(character.isdigit() for character in code)
 
 
 def _useful(code: str) -> bool:

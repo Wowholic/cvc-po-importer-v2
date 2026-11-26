@@ -8,7 +8,7 @@ import time
 
 import requests
 
-from config import GEMINI_API_KEY, GEMINI_MODEL, INVENTORY_TAB, SHEET_ID
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_THINKING, INVENTORY_TAB, SHEET_ID
 from extract_po import ExtractError, log_gemini_usage
 from sheet import SheetError, credentials
 
@@ -140,7 +140,7 @@ Treat spacing, dashes, and letter case as the same number. Do not invent a figur
         headers={"x-goog-api-key": GEMINI_API_KEY},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": GEMINI_THINKING},
         },
         timeout=60,
     )

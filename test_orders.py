@@ -1,6 +1,8 @@
 import unittest
+from unittest import mock
 
-from zoho_orders import OrderInputError, sales_order_payload
+from zoho_customers import ZohoError
+from zoho_orders import OrderInputError, sales_order_payload, sales_order_pdf
 
 
 FIELDS = [
@@ -81,3 +83,26 @@ class SalesOrderPayloadTest(unittest.TestCase):
         raw["customerId"] = "ACME"
         with self.assertRaises(OrderInputError):
             sales_order_payload(raw, FIELDS)
+
+
+class SalesOrderPdfTest(unittest.TestCase):
+    def fetch(self, status, content, body=None):
+        response = mock.Mock(status_code=status, content=content)
+        response.json.side_effect = (lambda: body) if body is not None else ValueError
+        with mock.patch("zoho_orders.configured", return_value=True), \
+                mock.patch("zoho_orders._access_token", return_value=("t", "https://z")), \
+                mock.patch("zoho_orders.requests.get", return_value=response) as get:
+            return sales_order_pdf("123"), get
+
+    def test_returns_the_pdf_bytes(self):
+        pdf, get = self.fetch(200, b"%PDF-1.7 ...")
+        self.assertEqual(pdf, b"%PDF-1.7 ...")
+        self.assertEqual(get.call_args.kwargs["params"]["accept"], "pdf")
+
+    def test_a_missing_scope_says_which_one(self):
+        with self.assertRaisesRegex(ZohoError, "salesorders.READ"):
+            self.fetch(401, b"{}", {"code": 57, "message": "You are not authorized"})
+
+    def test_rejects_an_odd_id(self):
+        with self.assertRaises(ZohoError):
+            sales_order_pdf("../contacts")

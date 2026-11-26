@@ -8,7 +8,7 @@ from datetime import date
 
 import requests
 
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_THINKING
 from rows import normalize_row
 
 # Paid-tier USD per 1,000,000 tokens. Output includes thinking tokens.
@@ -36,7 +36,8 @@ Return these fields only:
 - Payment Terms: the payment terms printed on the purchase order, such as Net 30 or due on receipt. Copy the wording from the PDF.
 - Delivery Method: the carrier, ship method, or delivery method printed on the purchase order. Copy the wording from the PDF.
 - Other: the customer's shipping account number, when the PDF gives one. This is the account the shipment should bill, such as a UPS, FedEx, or other carrier account, a collect account, or a third-party billing account. It is often printed beside the delivery method, ship via, freight, or carrier. Copy the account number, and keep a short carrier label when the PDF prints one with it. Use an empty string when no shipping account number is printed. Do not put the delivery method, a street address, a phone number, or the payment terms here.
-- FIG#: the part, figure, or manufacturer part identifier for the line
+- Ship To: the address the order should be delivered to, often labeled Ship To, Deliver To, or Delivery Address. Copy it on one line: name, street, city, state, and ZIP. Never use Cincinnati Valve's own address, and never use the bill-to address unless the PDF says to ship there. Use an empty string when no delivery address is printed.
+- FIG#: the part or figure number for the line, copied exactly as printed, with every prefix, suffix, and size it includes (for example MSP_18374X1/4" stays MSP_18374X1/4"). Never shorten it. Many purchase orders also print the customer's own internal number in a column such as SKU#, Item #, Stock #, or Material #. That is not the FIG#. When the line has no other part number and the description starts with one, such as 1837 in "1837 - 1/2 BRZ QO VALVE", use that.
 - Description: the words printed on that line that describe the part, such as a material, size, or valve type. Use an empty string when that line has no description.
 - Qty: the quantity for that line
 - Unit Price: the price for one unit on that line
@@ -194,7 +195,7 @@ def extract_bytes(pdf_bytes: bytes) -> list[dict]:
                     ]
                 }
             ],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {"responseMimeType": "application/json", "thinkingConfig": GEMINI_THINKING},
         },
         timeout=120,
     )

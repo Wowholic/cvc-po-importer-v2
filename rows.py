@@ -20,7 +20,7 @@ COLUMNS = [
 ]
 
 NUMBER_COLUMNS = {"Qty", "Unit Price"}
-ORDER_FIELDS = ("Payment Terms", "Delivery Method", "Other", "Description")
+ORDER_FIELDS = ("Payment Terms", "Delivery Method", "Other", "Ship To", "Description")
 DATE_RE = re.compile(r"^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-[0-9]{4}$")
 # Existing choices on PO/SO/INV TRACKING 2026. The shipment choice is spelled this way on the sheet.
 PAYMENT_STATUS = "Not Paid"

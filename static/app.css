@@ -601,6 +601,7 @@ iframe { width: 100%; height: 100%; border: 0; background: #525659; }
 }
 
 .picker-value.is-empty span { color: var(--muted); font-weight: 400; }
+.picker-value:disabled { cursor: default; background: #fafaf8; }
 
 .picker-value.is-invalid {
   background: #fdeceb;
@@ -866,6 +867,20 @@ iframe { width: 100%; height: 100%; border: 0; background: #525659; }
 .result-part strong { font-weight: 600; }
 .result-part p { margin: 0; }
 .result-part a { color: inherit; }
+
+.result-actions { display: grid; gap: 8px; }
+.result-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.result-problem { margin: 0; font-weight: 600; }
+
+.print-frame {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+}
 
 button:focus-visible, a:focus-visible, .drop:focus-visible {
   outline: 2px solid var(--green);

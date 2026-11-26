@@ -59,6 +59,9 @@ def sales_order_payload(order: dict, fields: list[dict]) -> dict:
     method_id = str(order.get("deliveryMethodId") or "").strip()
     if method_id.isdigit():
         payload["delivery_method_id"] = method_id
+    address_id = str(order.get("shippingAddressId") or "").strip()
+    if address_id.isdigit():
+        payload["shipping_address_id"] = address_id
     return payload
 
 
@@ -252,6 +255,39 @@ def _attach_pdf(salesorder_id: str, pdf_bytes: bytes, filename: str) -> bool:
         logger.exception("sales order attachment failed")
         return False
     return True
+
+
+def sales_order_pdf(salesorder_id: str) -> bytes:
+    """Download the sales order PDF that Zoho builds from its template."""
+    salesorder_id = str(salesorder_id or "").strip()
+    if not salesorder_id.isdigit():
+        raise ZohoError("Unknown sales order.")
+    if not configured():
+        raise ZohoError("Zoho Books is not set up.")
+    token, domain = _access_token()
+    try:
+        response = requests.get(
+            f"{domain}{SALES_ORDER_PATH}/{salesorder_id}",
+            params={"organization_id": ZOHO_ORGANIZATION_ID, "accept": "pdf"},
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            timeout=60,
+        )
+    except requests.RequestException as error:
+        raise ZohoError("Zoho Books could not send the sales order PDF.") from error
+    if response.status_code < 400 and response.content.startswith(b"%PDF"):
+        return response.content
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    code = body.get("code") if isinstance(body, dict) else None
+    if response.status_code == 401 or code == 57:
+        raise ZohoError(
+            "Zoho Books refused the sales order PDF. Add the ZohoBooks.salesorders.READ scope "
+            "and create a new refresh token."
+        )
+    message = body.get("message") if isinstance(body, dict) else ""
+    raise ZohoError(message or "Zoho Books could not send the sales order PDF.")
 
 
 def _response_body(response) -> dict:

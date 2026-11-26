@@ -115,6 +115,40 @@ class FamilySizeTest(unittest.TestCase):
     def test_a_family_right_after_another_digit_does_not_count(self):
         self.assertEqual(family_figure("MSP_91837X1/4", "", SIZES_1837), "")
 
+    def test_the_figure_repeated_in_the_description_is_not_read_as_a_size(self):
+        # Motion PO IA04-00413265: FIG# 1837, description "1837 - 1/2 BRZ QO VALVE LUNK 150".
+        description = "1837 - 1/2 BRZ QO VALVE LUNK 150 MFG HAS STOCK"
+        self.assertEqual(pdf_sizes("1837", description), {Fraction(1, 2)})
+        sizes = {**SIZES_1837, "1837005": '1/2"'}
+        items = FAMILY_1837 + [{"id": "b005", "name": "BRONZE - 1837005", "sku": "", "status": "active"}]
+        chosen, pending = match_item("1837", description, items, sizes)
+        self.assertEqual(chosen["name"], "BRONZE - 1837005")
+        self.assertEqual(pending, [])
+
+    def test_an_all_digit_figure_still_matches_by_part_number(self):
+        items = [
+            {"id": "x", "name": "NON LUNK DESIGN - 15011B040", "sku": "", "status": "active"},
+            {"id": "b002", "name": "BRONZE - 1837002", "sku": "", "status": "active"},
+        ]
+        chosen, _pending = match_item("1837", "BRZ QO VALVE LUNK 150", items, {})
+        self.assertEqual(chosen["name"], "BRONZE - 1837002")
+
+    def test_without_a_size_or_material_the_item_named_exactly_like_the_figure_wins(self):
+        chosen, pending = match_item("1837", "QO VALVE LUNK 150", FAMILY_1837, SIZES_1837)
+        self.assertEqual(chosen["name"], "1837")
+        self.assertEqual(pending, [])
+
+    def test_a_material_in_the_description_beats_the_exact_item(self):
+        for description in ("BRZ QO VALVE", "BZ QO VALVE", "BRONZE QO VALVE"):
+            chosen, _pending = match_item("1837", description, FAMILY_1837, SIZES_1837)
+            self.assertTrue(chosen["name"].startswith("BRONZE - 1837"), description)
+
+    def test_a_size_inside_a_part_code_in_the_description_counts(self):
+        # Applied PO 4515804109: FIG# shortened to 1837, the full MSP_18374X1/4" left in the description.
+        self.assertEqual(pdf_sizes("1837", 'MSP_18374X1/4"'), {Fraction(1, 4)})
+        chosen, _pending = match_item("1837", 'MSP_18374X1/4"', FAMILY_1837, SIZES_1837)
+        self.assertEqual(chosen["name"], "BRONZE - 1837002")
+
     def test_no_size_means_no_family_match(self):
         self.assertEqual(family_figure("MSP_1837", "", SIZES_1837), "")
 

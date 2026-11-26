@@ -7,7 +7,7 @@ import math
 import threading
 import time
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 
 from auth import (
     SESSION_COOKIE,
@@ -29,7 +29,8 @@ from sheet import SheetError, append_purchase_orders
 from catalog import load_catalog
 from resolve import ask_leftovers, resolve_order
 from zoho_customers import ZohoError, customer_choices, item_catalog, item_choices, order_option_choices
-from zoho_orders import OrderInputError, create_draft_sales_order, prepare_draft_sales_order
+from addresses import address_choices
+from zoho_orders import OrderInputError, create_draft_sales_order, prepare_draft_sales_order, sales_order_pdf
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
@@ -249,6 +250,18 @@ def order_options():
         return fail("Zoho Books could not load payment terms.", 502)
 
 
+@app.post("/api/addresses")
+def addresses():
+    body = request.get_json(silent=True) or {}
+    try:
+        return respond(address_choices(body.get("customerId", ""), str(body.get("shipTo") or "")))
+    except ZohoError as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("addresses failed")
+        return fail("Zoho Books could not load the customer's addresses.", 502)
+
+
 @app.post("/api/figures")
 def figures():
     body = request.get_json(silent=True) or {}
@@ -283,6 +296,18 @@ def submission():
         "rows": rows,
         "order": order,
     }, pdf_bytes, filename
+
+
+@app.get("/api/salesorders/<salesorder_id>/pdf")
+def salesorder_pdf(salesorder_id):
+    try:
+        pdf_bytes = sales_order_pdf(salesorder_id)
+    except ZohoError as error:
+        return fail(str(error), 502)
+    except Exception:
+        app.logger.exception("sales order pdf failed")
+        return fail("Zoho Books could not send the sales order PDF.", 502)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/submit")
