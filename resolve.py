@@ -66,14 +66,20 @@ def resolve_order(rows, catalog, ask=None) -> dict:
             continue
         seen.add(figure)
         description = _text(row.get("Description"))
+        family, size, material = (_text(row.get(field)) for field in ("Family", "Size", "Material"))
+        # Gemini's family and size, chosen from the inventory lists, come first.
+        # Reading them from the printed text is the fallback.
+        hinted = _sheet_spelling(hinted_figure(family, size, sizes), figures)
         chosen_figure, figure_options = match_figure(figure, figures)
+        if hinted and _code(chosen_figure) != _code(figure):
+            chosen_figure, figure_options = hinted, []
         if not chosen_figure:
             chosen_figure = _sheet_spelling(family_figure(figure, description, sizes), figures)
         if chosen_figure:
             figure_matches[figure] = chosen_figure
         elif figure_options:
             figure_pending.append({"source": figure, "options": figure_options})
-        chosen_item, item_options = match_item(figure, description, items, sizes)
+        chosen_item, item_options = match_item(figure, description, items, sizes, family, size, material)
         if chosen_item:
             item_matches[figure] = {"id": chosen_item["id"], "name": chosen_item["name"]}
         elif item_options:
@@ -148,16 +154,87 @@ def resolve_order(rows, catalog, ask=None) -> dict:
     }
 
 
-def match_item(figure: str, description: str, items: list[dict], sizes: dict | None = None):
+def match_item(
+    figure: str,
+    description: str,
+    items: list[dict],
+    sizes: dict | None = None,
+    family: str = "",
+    size: str = "",
+    material: str = "",
+):
+    """Find the Zoho item for a line.
+
+    1. Gemini's family and size give the inventory figure (3072 + 3" -> 3072030),
+       and its Zoho items are settled by Gemini's material (STEEL - 3072030).
+    2. Otherwise family + size read from the printed text, then the part number.
+    3. When that finds nothing, the items for Gemini's family are offered, never picked.
+    """
+    described = f"{description} {material}".strip()
+    hinted = _items_for_figure(hinted_figure(family, size, sizes), items)
+    if hinted:
+        return _settled(hinted, described, material)
     # Family + size from the inventory tab (1837 + 1/2 -> 1837005) is the most precise
     # answer, so it wins over a looser part-number hit such as 1837-40-005.
-    family = _items_for_figure(family_figure(figure, description, sizes), items)
-    if family:
-        chosen = settle_tie(family, description)
-        # Several Zoho items share this inventory figure and nothing tells them apart:
-        # offer only those, never a looser match.
-        return (chosen, []) if chosen else (None, family[:8])
-    return _match_item_codes(figure, description, items, sizes)
+    read = _items_for_figure(family_figure(figure, description, sizes), items)
+    if read:
+        return _settled(read, described, material)
+    chosen, options = _match_item_codes(figure, described, items, sizes)
+    if chosen or options or not _code(family) or _code(family) == _code(figure):
+        return chosen, options
+    # Only the family is known, not which item: offer its items rather than pick one.
+    chosen, options = _match_item_codes(family, f"{figure} {described}", items, sizes)
+    return None, ([chosen] if chosen else []) + [item for item in options if item is not chosen]
+
+
+def _settled(candidates: list[dict], description: str, material: str):
+    chosen = settle_tie(candidates, description, material)
+    # Several Zoho items share this inventory figure and nothing tells them apart:
+    # offer only those, never a looser match.
+    return (chosen, []) if chosen else (None, candidates[:8])
+
+
+def hinted_figure(family: str, size: str, sizes: dict | None) -> str:
+    """The inventory figure for a family and size from the lists, such as 3072 + 3" -> 3072030."""
+    family = _code(family)
+    wanted = size_value(size)
+    if not sizes or not family or wanted is None:
+        return ""
+    hits = [
+        key for key, value in sizes.items()
+        if key[:-3] == family and re.search(r"\d{3}$", key) and size_value(value) == wanted
+    ]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def catalog_hints(catalog: dict) -> dict:
+    """The lists Gemini chooses from when it reads a PDF: figure families, sizes and materials."""
+    sizes = catalog.get("figureSizes") or {}
+    families = sorted({
+        key[:-3] for key in sizes
+        if re.search(r"\d{3}$", key) and len(key) >= 6 and re.search(r"\d", key[:-3])
+    })
+    values = {size_value(value) for value in sizes.values()} - {None}
+    materials = {}
+    for item in catalog.get("items") or []:
+        for word in _material_words(item):
+            materials[word] = materials.get(word, 0) + 1
+    return {
+        "families": families,
+        "sizes": [size_text(value) for value in sorted(values)],
+        # Item names start with a material or kind, such as BRONZE - 1837005 or PARTS - 307212.
+        "materials": sorted(word for word, count in materials.items() if count >= 20),
+    }
+
+
+def size_text(value: Fraction) -> str:
+    """A size in inches without the inch mark, which would break Gemini's JSON: 1-1/2."""
+    whole, part = divmod(value, 1)
+    if not part:
+        return str(whole)
+    if not whole:
+        return str(part)
+    return f"{whole}-{part}"
 
 
 def _match_item_codes(figure: str, description: str, items: list[dict], sizes: dict | None = None):
@@ -324,14 +401,20 @@ def _items_for_figure(key: str, items: list[dict]) -> list[dict]:
     return found
 
 
-def settle_tie(candidates: list[dict], description: str):
+def settle_tie(candidates: list[dict], description: str, material: str = ""):
     """Pick one of several equally good items, or None.
 
-    One candidate wins. Otherwise a single active one wins, then a single one whose
-    material (the part before " - ", such as BRONZE) is named in the description (BRZ).
+    One candidate wins. Then a single one with Gemini's material. Otherwise a single
+    active one wins, then a single one whose material (the part before " - ",
+    such as BRONZE) is named in the description (BRZ).
     """
     if len(candidates) == 1:
         return candidates[0]
+    wanted = description_words(material) - BRAND_WORDS
+    if wanted:
+        named = [item for item in candidates if _material_words(item) & wanted]
+        if len(named) == 1:
+            return named[0]
     active = [item for item in candidates if item.get("status") == "active"] or candidates
     if len(active) == 1:
         return active[0]

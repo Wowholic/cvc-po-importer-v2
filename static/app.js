@@ -48,6 +48,8 @@ const result = document.getElementById("result");
 const syncWhen = document.getElementById("sync-when");
 
 let file = null;
+// The PDF with the text Gemini used highlighted. Shown and printed; the original goes to Zoho.
+let markedFile = null;
 let objectUrl = null;
 let pdfShown = null;
 const shell = document.querySelector(".shell");
@@ -192,6 +194,7 @@ function useFile(next) {
   }
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   file = next;
+  markedFile = null;
   objectUrl = URL.createObjectURL(next);
   pdfShown = null;
   pdf.removeAttribute("src");
@@ -209,6 +212,7 @@ function forgetFile() {
   if (objectUrl) URL.revokeObjectURL(objectUrl);
   objectUrl = null;
   file = null;
+  markedFile = null;
   fileInput.value = "";
   pdfShown = null;
   pdf.removeAttribute("src");
@@ -239,6 +243,7 @@ async function readPdf() {
     const response = await fetch("/api/extract", { method: "POST", body });
     const data = await readJson(response);
     const rows = Array.isArray(data.rows) && data.rows.length ? data.rows : [blankRow()];
+    if (data.highlighted) showHighlighted(data.highlighted);
     await loadCatalog();
     resolution = await resolveRows(rows);
     renderLines(rows);
@@ -296,6 +301,15 @@ function showSyncTime(saved) {
     timeZoneName: "short",
   }).format(date);
   syncWhen.textContent = `Last sync ${formatted}`;
+}
+
+function showHighlighted(encoded) {
+  const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+  markedFile = new Blob([bytes], { type: "application/pdf" });
+  // The preview loads when the review opens, so swapping the URL now shows this copy.
+  if (objectUrl) URL.revokeObjectURL(objectUrl);
+  objectUrl = URL.createObjectURL(markedFile);
+  pdfShown = null;
 }
 
 async function resolveRows(rows) {
@@ -1705,7 +1719,7 @@ async function onSubmit(event) {
     formData.append("order", JSON.stringify(zohoOrder(rows)));
     formData.append("pdf", file, file.name || "purchase-order.pdf");
   }
-  const sentFile = file;
+  const sentFile = markedFile || file;
   try {
     const response = await fetch("/api/submit", { method: "POST", body: formData });
     const data = await readJson(response);
@@ -1758,25 +1772,38 @@ function printActions(salesOrderId, poFile) {
   const problem = document.createElement("p");
   problem.className = "result-problem";
   problem.hidden = true;
-  if (salesOrderId) {
-    let soPdf = null;
-    buttons.append(printButton("Print Zoho SO", problem, async () => {
-      if (!soPdf) {
+  // One button prints whatever this order has: the Zoho sales order followed by
+  // the client PO, or only one of them when the other doesn't exist.
+  let printable = null;
+  buttons.append(printButton("Print Sales Order", problem, async () => {
+    if (!printable) {
+      const parts = [];
+      if (salesOrderId) {
         const response = await fetch(`/api/salesorders/${encodeURIComponent(salesOrderId)}/pdf`);
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
           throw new Error(data.error || "Zoho Books could not send the sales order PDF.");
         }
-        soPdf = await response.blob();
+        parts.push(await response.blob());
       }
-      return soPdf;
-    }));
-  }
-  if (poFile) {
-    buttons.append(printButton("Print client PO", problem, async () => poFile));
-  }
+      if (poFile) parts.push(poFile);
+      printable = parts.length === 1 ? parts[0] : await mergePdfs(parts);
+    }
+    return printable;
+  }));
   wrap.append(buttons, problem);
   return wrap;
+}
+
+async function mergePdfs(parts) {
+  const body = new FormData();
+  parts.forEach((part, index) => body.append("pdf", part, `part-${index + 1}.pdf`));
+  const response = await fetch("/api/pdf/merge", { method: "POST", body });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "The PDFs could not be put together.");
+  }
+  return response.blob();
 }
 
 function printButton(text, problem, getPdf) {
@@ -1908,7 +1935,10 @@ function logUsage(data) {
 
 async function readJson(response) {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "Something went wrong.");
+  if (!response.ok) {
+    console.error(`${response.url} failed (HTTP ${response.status}): ${data.detail || data.error || "no details"}`);
+    throw new Error(data.error || "Something went wrong.");
+  }
   logUsage(data);
   return data;
 }

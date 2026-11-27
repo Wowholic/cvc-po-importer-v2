@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manual purchase-order desk: read a PDF, review the lines, send them on."""
 
+import base64
 import json
 import logging
 import math
@@ -27,7 +28,8 @@ from rows import RowError, validate_rows
 from figures import figure_choices
 from sheet import SheetError, append_purchase_orders
 from catalog import load_catalog
-from resolve import ask_leftovers, resolve_order
+from highlight import highlight_pdf, merge_pdfs
+from resolve import ask_leftovers, catalog_hints, resolve_order
 from zoho_customers import ZohoError, customer_choices, item_catalog, item_choices, order_option_choices
 from addresses import address_choices
 from zoho_orders import OrderInputError, create_draft_sales_order, prepare_draft_sales_order, sales_order_pdf
@@ -38,8 +40,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_PDF_BYTES
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
-def fail(message: str, status: int):
-    return jsonify(error=message), status
+def fail(message: str, status: int, detail: str = ""):
+    # detail is technical: the browser only prints it in the console, to see where an error came from.
+    return (jsonify(error=message, detail=detail) if detail else jsonify(error=message)), status
 
 
 def _signed_in() -> bool:
@@ -150,13 +153,24 @@ def extract():
     if not pdf_bytes.startswith(b"%PDF"):
         return fail("That file is not a PDF.", 400)
     try:
-        rows = extract_bytes(pdf_bytes)
-    except ExtractError as error:
-        return fail(str(error), 502)
+        hints = catalog_hints(load_catalog())
     except Exception:
+        app.logger.exception("inventory lists for the PDF read failed")
+        hints = None
+    try:
+        rows, sources = extract_bytes(pdf_bytes, hints)
+    except ExtractError as error:
+        app.logger.warning("purchase order read failed: %s (%s)", error, error.detail)
+        return fail(str(error), 502, error.detail or f"Gemini: {error}")
+    except Exception as error:
         app.logger.exception("purchase order read failed")
-        return fail("The purchase order could not be read.", 502)
-    return respond({"rows": rows})
+        return fail("The purchase order could not be read.", 502, f"{type(error).__name__}: {error}")
+    marked = highlight_pdf(pdf_bytes, sources)
+    return respond({
+        "rows": rows,
+        # The PDF with the text Gemini used highlighted, for the preview and printing.
+        "highlighted": base64.standard_b64encode(marked).decode("ascii") if marked else None,
+    })
 
 
 @app.get("/api/catalog")
@@ -308,6 +322,20 @@ def salesorder_pdf(salesorder_id):
         app.logger.exception("sales order pdf failed")
         return fail("Zoho Books could not send the sales order PDF.", 502)
     return Response(pdf_bytes, mimetype="application/pdf", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/pdf/merge")
+def pdf_merge():
+    """One PDF from several, in the order sent, so they print in one go."""
+    documents = [upload.read() for upload in request.files.getlist("pdf")]
+    if len(documents) < 2 or not all(document.startswith(b"%PDF") for document in documents):
+        return fail("Send the PDFs to put together.", 400)
+    try:
+        merged = merge_pdfs(documents)
+    except Exception:
+        app.logger.exception("pdf merge failed")
+        return fail("The PDFs could not be put together.", 502)
+    return Response(merged, mimetype="application/pdf", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/submit")

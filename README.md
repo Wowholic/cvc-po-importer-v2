@@ -15,15 +15,16 @@ The app never emails the customer, confirms the Zoho order, or creates customers
 | **Google Sheets** | Writes order lines to the tracking tab. Reads figure numbers and sizes from the INVENTORY tab. |
 | **Zoho Books** | Reads customers, items, payment terms and delivery methods. Creates the draft sales order. |
 | **Flask** (Python) | Runs the web app. |
+| **pdfplumber**, **pypdf** (Python) | Find where text sits in the PDF, draw the highlights, and merge PDFs for Print Sales Order. |
 
 ## How to use it
 
 1. Sign in. One shared username and password covers the whole team. The session lasts 12 hours.
 2. Drop a PDF on the page (under 32 MB) and press **Read purchase order**.
-3. Check the form. The PDF shows on the left. Correct anything that was read or matched wrong.
+3. Check the form. The PDF shows on the left, with the text Gemini used highlighted in yellow so you can find each value quickly. Correct anything that was read or matched wrong.
 4. Tick **Spreadsheet**, **Zoho Books**, or both, and press **Submit**.
 5. A green banner confirms what was added, with links to the spreadsheet and the sales order. If something fails, the form stays open with the error.
-6. **Print Zoho SO** prints the sales order PDF that Zoho builds from its template. **Print client PO** prints the PDF you dropped. Both stay available until you drop the next PDF.
+6. **Print Sales Order** prints everything for the order in one go: the Zoho sales order (the PDF Zoho builds from its template), followed by the client PO with its highlights. Without a Zoho order it prints only the client PO. It stays available until you drop the next PDF.
 
 **Sync Zoho Books Data** (top right) reloads the saved customers, items, payment terms, delivery methods and inventory figures, and forgets the saved customer addresses. Press it after any of those change in Zoho or in the INVENTORY tab. The time of the last sync is shown next to the button, in Cincinnati time.
 
@@ -65,16 +66,30 @@ One field is matched for the order:
 | --- | --- |
 | Shipping Address | One of the customer's Zoho addresses. Sent to Zoho only. |
 
+## Highlights
+
+Gemini also returns the text it used, copied as printed, one entry per printed line (its **Sources**). `highlight.py` finds those words in the PDF's text layer and draws see-through yellow over them in a copy of the PDF. That copy is what the preview shows and what the print buttons print. The PDF attached to the Zoho sales order is the original, without highlights.
+
+- Case and punctuation are ignored (`Inc` = `Inc.`), and a number glued to a label is still found (`62600619` in `With:62600619*`).
+- An address Gemini wrote on one line is found by its comma parts.
+- Text printed more than 4 times, such as `EA`, isn't highlighted, because that wouldn't help anyone find anything.
+- All highlights on a page are one shape: overlapping boxes merge instead of getting darker, and boxes on neighbouring lines join into one block.
+- A scanned PDF has no text layer, so it gets no highlights. Neither do rotated pages. The form still works the same.
+
 ## How matching works
 
 The app first compares what Gemini read with the saved lists, without calling Gemini again. The customer, payment terms and delivery method are matched by name.
 
+When Gemini reads the PDF, it also gets three short lists taken from the saved data: the figure families in the INVENTORY tab (`1837`, `3072`…), the sizes in column B (`1/2`, `3`…), and the materials Zoho item names start with (`BRONZE`, `STEEL`…). For each line it picks a **Family**, **Size** and **Material** from those lists, or none. Gemini handles how each customer writes them (`3-Inch`, `Fig. 3072`, `MSP_18374X1/4"`, `BRZ`), so the app doesn't have to. These picks are only used for matching and aren't shown or saved. Gemini's reply follows a fixed schema, so it's always valid JSON with these fields.
+
 A line's Zoho item and inventory figure are matched in this order:
 
-1. **Family + size.** An inventory figure is a family plus a 3-digit size code: `1837005` = family `1837` + size `005`. If the FIG# contains a family and the PDF gives a size, the app finds the inventory row whose column B (**SIZE**) matches and the Zoho item with the same name (`BRONZE - 1837005`). If several Zoho items share that figure (`180020` and `BRONZE - 180020`), the material named in the description (`BRZ`) decides; if none is named, only those items are offered. The size comes from the description (`1"`, `1-1/2 IN`, or a leading `1/2`, ignoring the FIG# if the description repeats it) or from the FIG# (the `1/4` in `MSP_18374X1/4`).
-2. **Exact name.** A Zoho item whose whole name or SKU is the FIG# (`1837`, `T-811X`) is chosen, unless the description names a material (`BRZ`/`BZ` = BRONZE, `STL` = STEEL, `SS`, `CI`…) that other items with that part number carry before " - " (`BRONZE - 1837005`). Then those items compete in step 3.
-3. **Part number.** A code from the FIG# matches an item name or SKU, including all-digit codes like `1837`. If it clearly wins, it's chosen. A code found only in the description, such as `CR13`, counts for less. If several items are close (e.g. every size of `906BS`), the size from the PDF picks the one whose SIZE matches.
-4. **Gemini.** Anything still undecided goes to Gemini in one call. Gemini can only choose from the options the app offers.
+1. **Gemini's family + size.** Family `3072` + size `3` gives the inventory row `3072030` (column B says 3"). That's the FIG# for Spreadsheet, and the Zoho item with the same name is chosen (`STEEL - 3072030`). If several Zoho items share it, Gemini's material decides, then the rules below.
+2. **Family + size read from the text.** The same idea, as a fallback when Gemini's picks give nothing. An inventory figure is a family plus a 3-digit size code: `1837005` = family `1837` + size `005`. If the FIG# contains a family and the PDF gives a size, the app finds the inventory row whose column B (**SIZE**) matches and the Zoho item with the same name (`BRONZE - 1837005`). If several Zoho items share that figure (`180020` and `BRONZE - 180020`), the material named in the description (`BRZ`) decides; if none is named, only those items are offered. The size comes from the description (`1"`, `1-1/2 IN`, or a leading `1/2`, ignoring the FIG# if the description repeats it) or from the FIG# (the `1/4` in `MSP_18374X1/4`).
+3. **Exact name.** A Zoho item whose whole name or SKU is the FIG# (`1837`, `T-811X`) is chosen, unless the description names a material (`BRZ`/`BZ` = BRONZE, `STL` = STEEL, `SS`, `CI`…) that other items with that part number carry before " - " (`BRONZE - 1837005`). Then those items compete in step 4.
+4. **Part number.** A code from the FIG# matches an item name or SKU, including all-digit codes like `1837`. If it clearly wins, it's chosen. A code found only in the description, such as `CR13`, counts for less. If several items are close (e.g. every size of `906BS`), the size from the PDF picks the one whose SIZE matches.
+5. **Gemini's family alone.** If nothing above found an item but Gemini gave a family (no size), that family's items are offered, never picked.
+6. **Gemini.** Anything still undecided goes to Gemini in one call. Gemini can only choose from the options the app offers.
 
 **Shipping address.** Once the company is chosen, the app fetches that customer's addresses from Zoho in one request and saves them in `cache/addresses.json` until the next Sync. It compares each one with the PDF's Ship To, without Gemini: same ZIP code, same street number, shared street words (`Road` = `Rd`, `Suite` = `Ste`, and so on), same city. A clear winner is chosen. Otherwise the customer's default shipping address is chosen and the field says to check it.
 
@@ -133,7 +148,7 @@ cp .env.example .env      # then fill in the values below
 | `GOOGLE_IMPERSONATE` | The Google user the service account acts as. That user needs edit access to the spreadsheet. |
 | `SHEET_ID` / `SHEET_TAB` | Spreadsheet and tab to write to. Defaults: the Sales Order Tracker, `PO/SO/INV TRACKING 2026`. |
 | `INVENTORY_TAB` | The inventory tab, always in the same spreadsheet as `SHEET_ID`. Default `INVENTORY`. |
-| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | Zoho API access. Token scopes: `ZohoBooks.contacts.READ`, `ZohoBooks.settings.READ`, `ZohoBooks.salesorders.CREATE`, `ZohoBooks.salesorders.READ` (for Print Zoho SO). |
+| `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | Zoho API access. Token scopes: `ZohoBooks.contacts.READ`, `ZohoBooks.settings.READ`, `ZohoBooks.salesorders.CREATE`, `ZohoBooks.salesorders.READ` (for Print Sales Order). |
 | `ZOHO_ORGANIZATION_ID` | Zoho Books organization id. |
 | `ZOHO_ACCOUNTS_DOMAIN` / `ZOHO_API_DOMAIN` | Default `accounts.zoho.com` / `www.zohoapis.com`. Use the `.eu` versions for an EU account. |
 | `AUTH_USER` / `AUTH_PASSWORD` | Shared sign-in. Password: at least 12 characters. |
@@ -167,10 +182,11 @@ Everything except the sign-in page needs a signed-in session. Without one, the A
 | `GET /login`, `POST /login` | Sign-in page and sign-in. |
 | `POST /logout` | Sign out. |
 | `GET /` | The main page. |
-| `POST /api/extract` | Upload a PDF (`pdf`). Gemini reads it and returns the lines. |
+| `POST /api/extract` | Upload a PDF (`pdf`). Gemini reads it and returns the lines, and the highlighted PDF in base64 (`highlighted`, or `null`). |
 | `POST /api/resolve` | Send the lines. Returns the customer, terms, delivery method, figure and item matches. |
 | `POST /api/submit` | Send the order. Fields: `spreadsheet` and `zoho` (`"true"`/`"false"`), `rows` (JSON lines), `order` (Zoho details), `pdf`. |
-| `GET /api/salesorders/<id>/pdf` | The sales order PDF from Zoho (Print Zoho SO). |
+| `GET /api/salesorders/<id>/pdf` | The sales order PDF from Zoho (Print Sales Order). |
+| `POST /api/pdf/merge` | Send two or more PDFs (`pdf`, repeated). Returns one PDF with their pages in that order (Print Sales Order). |
 | `POST /api/addresses` | Send `customerId` and `shipTo`. Returns the customer's addresses and the best match. |
 | `GET /api/catalog` | The saved Zoho and inventory lists. |
 | `POST /api/catalog/refresh` | Reload those lists (the Sync button). |
@@ -201,7 +217,7 @@ The real bill:
 .venv/bin/python -m unittest
 ```
 
-The tests don't call Gemini, Zoho or Google Sheets. `test_real_orders.py` runs lines from real purchase orders against the saved catalog (it's skipped if `cache/catalog.json` is missing). When a PDF is matched wrong, add its line there with the right answer.
+The tests don't call Gemini, Zoho or Google Sheets. `test_real_orders.py` runs lines from real purchase orders against the saved catalog (it's skipped if `cache/catalog.json` is missing). When a PDF is matched wrong, add its line there with the right answer. `test_highlight.py` builds a small PDF itself to test the highlights.
 
 ## Files
 
@@ -210,6 +226,7 @@ The tests don't call Gemini, Zoho or Google Sheets. `test_real_orders.py` runs l
 | `app.py` | Pages, sign-in and API routes. |
 | `extract_po.py` | Reads the PDF with Gemini and prints the cost. |
 | `resolve.py` | Matching: part number, size, family + size, then Gemini. |
+| `highlight.py` | Highlights the text Gemini used in a copy of the PDF, and merges PDFs for Print Sales Order. |
 | `addresses.py` | Fetches and saves a customer's addresses, and matches the Ship To. |
 | `catalog.py` | Saves the Zoho and inventory lists in `cache/catalog.json`. |
 | `figures.py` | Reads figure numbers and sizes from the INVENTORY tab. |

@@ -2,8 +2,18 @@ import unittest
 from datetime import date
 from fractions import Fraction
 
-from extract_po import usage_record
-from resolve import family_figure, match_item, pdf_size, pdf_sizes, resolve_order, size_value
+from extract_po import PROMPT, build_prompt, usage_record
+from resolve import (
+    catalog_hints,
+    family_figure,
+    hinted_figure,
+    match_item,
+    pdf_size,
+    pdf_sizes,
+    resolve_order,
+    size_text,
+    size_value,
+)
 
 BRONZE = {"id": "1", "name": "BRONZE - 906BS001", "sku": "", "status": "active"}
 BRASS = {"id": "2", "name": "BRASS GATE 12", "sku": "", "status": "active"}
@@ -305,3 +315,57 @@ class GeminiPriceTest(unittest.TestCase):
         }, date(2026, 11, 24))
         self.assertIsNone(record["usd"])
         self.assertIn("price unknown", record["line"])
+
+
+class GeminiPicksTest(unittest.TestCase):
+    """Family, size and material that Gemini chose from the inventory lists."""
+
+    SIZES = {"3072020": '2"', "3072030": '3"', "3072040": "4", "1837005": "1/2"}
+    ITEMS = [
+        {"id": "1", "name": "STEEL - 3072030", "sku": "", "status": "active"},
+        {"id": "2", "name": "IRON - 3072030", "sku": "", "status": "active"},
+        {"id": "3", "name": 'STEEL - 3072-RTJ 8"', "sku": "", "status": "active"},
+        {"id": "4", "name": "STEEL - 3072040", "sku": "", "status": "active"},
+    ]
+
+    def test_family_and_size_give_the_inventory_figure(self):
+        self.assertEqual(hinted_figure("3072", '3"', self.SIZES), "3072030")
+        self.assertEqual(hinted_figure("3072", "4", self.SIZES), "3072040")
+        self.assertEqual(hinted_figure("3072", "", self.SIZES), "")
+        self.assertEqual(hinted_figure("9999", '3"', self.SIZES), "")
+
+    def test_material_settles_items_that_share_the_figure(self):
+        chosen, _ = match_item("LHSWCV300300-3072", "Swing Check Valve", self.ITEMS, self.SIZES, "3072", '3"', "STEEL")
+        self.assertEqual(chosen["name"], "STEEL - 3072030")
+
+    def test_without_a_material_the_tied_items_are_offered(self):
+        chosen, options = match_item("LHSWCV300300-3072", "Swing Check Valve", self.ITEMS, self.SIZES, "3072", '3"', "")
+        self.assertIsNone(chosen)
+        self.assertEqual({item["id"] for item in options}, {"1", "2"})
+
+    def test_the_family_is_searched_when_the_part_number_finds_nothing(self):
+        self.assertEqual(match_item("CUST-ABC", "Swing Check Valve", self.ITEMS, self.SIZES), (None, []))
+        chosen, options = match_item("CUST-ABC", "Swing Check Valve", self.ITEMS, self.SIZES, "3072", "", "")
+        self.assertIsNone(chosen)
+        self.assertTrue(options)
+
+    def test_the_spreadsheet_figure_comes_from_the_picks(self):
+        rows = [{"FIG#": "LHSWCV300300-3072", "Description": "", "Family": "3072", "Size": '3"', "Material": "STEEL"}]
+        catalog = {"items": self.ITEMS, "figures": ["3072030", "3072040"], "figureSizes": self.SIZES}
+        resolved = resolve_order(rows, catalog)
+        self.assertEqual(resolved["figures"], {"LHSWCV300300-3072": "3072030"})
+        self.assertEqual(resolved["items"]["LHSWCV300300-3072"]["name"], "STEEL - 3072030")
+
+    def test_lists_sent_to_gemini(self):
+        items = [{"name": f"STEEL - {n}"} for n in range(25)] + [{"name": "BRONZE - 1"}]
+        hints = catalog_hints({"figureSizes": self.SIZES, "items": items})
+        self.assertEqual(hints["families"], ["1837", "3072"])
+        self.assertEqual(hints["sizes"], ["1/2", "2", "3", "4"])
+        self.assertEqual(hints["materials"], ["STEEL"])
+        self.assertEqual(size_text(Fraction(3, 2)), "1-1/2")
+
+    def test_prompt_lists_only_when_saved(self):
+        self.assertEqual(build_prompt(None), PROMPT)
+        prompt = build_prompt({"families": ["3072"], "sizes": ["3"], "materials": ["STEEL"]})
+        self.assertIn("FAMILIES: 3072", prompt)
+        self.assertIn("SIZES: 3", prompt)
